@@ -1,0 +1,35 @@
+{
+  "version": "V5",
+  "schema": {
+    "endianness": "Little",
+    "fields": [
+      {
+        "name": "age",
+        "nullable": true,
+        "type_type": "Int",
+        "type": {
+          "bitWidth": 32,
+          "is_signed": true
+        },
+        "children": [
+
+        ]
+      }
+    ]
+  },
+  "dictionaries": [
+
+  ],
+  "recordBatches": [
+    {
+      "offset": 0,
+      "metaDataLength": 256,
+      "bodyLength": 4096
+    },
+    {
+      "offset": 8192,
+      "metaDataLength": 128,
+      "bodyLength": 2048
+    }
+  ]
+}

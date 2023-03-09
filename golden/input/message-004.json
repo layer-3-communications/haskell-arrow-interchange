@@ -1,0 +1,10 @@
+{ "header":
+  { "tag": "MessageHeaderSchema"
+  , "contents":
+    { "endianness": 0
+    , "fields": []
+    }
+  }
+, "bodyLength": 0
+}
+

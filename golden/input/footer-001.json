@@ -1,0 +1,12 @@
+{ "schema":
+  { "endianness": 0
+  , "fields": []
+  } 
+, "dictionaries": []
+, "recordBatches":
+  [ { "offset": 0
+    , "metaDataLength": 256
+    , "bodyLength": 4096
+    }
+  ]
+}

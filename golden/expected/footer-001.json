@@ -1,0 +1,19 @@
+{
+  "version": "V5",
+  "schema": {
+    "endianness": "Little",
+    "fields": [
+
+    ]
+  },
+  "dictionaries": [
+
+  ],
+  "recordBatches": [
+    {
+      "offset": 0,
+      "metaDataLength": 256,
+      "bodyLength": 4096
+    }
+  ]
+}

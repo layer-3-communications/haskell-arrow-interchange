@@ -1,0 +1,10 @@
+{ "header":
+  { "tag": "MessageHeaderRecordBatch"
+  , "contents":
+    { "length": 5
+    , "nodes": []
+    , "buffers": []
+    }
+  }
+, "bodyLength": 1000
+}

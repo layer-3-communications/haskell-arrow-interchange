@@ -1,0 +1,29 @@
+{ "schema":
+  { "endianness": 0
+  , "fields":
+    [ { "name": "age"
+      , "nullable": true
+      , "type_":
+        { "tag": "Int"
+        , "contents":
+          { "bitWidth":32
+          , "isSigned":true
+          }
+        }
+      , "dictionary": []
+      , "children": []
+      }
+    ]
+  } 
+, "dictionaries": []
+, "recordBatches":
+  [ { "offset": 0
+    , "metaDataLength": 256
+    , "bodyLength": 4096
+    }
+  , { "offset": 8192
+    , "metaDataLength": 128
+    , "bodyLength": 2048
+    }
+  ]
+}

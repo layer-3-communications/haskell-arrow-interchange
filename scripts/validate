@@ -1,0 +1,5 @@
+#!/usr/bin/python3
+import pyarrow.feather as feather
+
+table = feather.read_table('output.arrow')
+table.validate(full=True)

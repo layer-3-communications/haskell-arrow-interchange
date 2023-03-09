@@ -1,0 +1,105 @@
+cabal-version:      3.4
+name:               haskell-arrow-interchange
+version:            0.1.0.0
+-- synopsis:
+-- description:
+license:            BSD-3-Clause
+license-file:       LICENSE
+author:             Andrew Martin
+maintainer:         andrew.thaddeus@gmail.com
+-- copyright:
+category:           Data
+build-type:         Simple
+extra-doc-files:    CHANGELOG.md
+-- extra-source-files:
+
+common shared
+  ghc-options: -Wall -O2
+  build-depends:
+    , base >=4.16
+    , byteslice >=0.2.9
+    , flatbuffers-builder
+    , array-builder
+    , text >=2.0
+    , natural-arithmetic
+    , primitive >=0.8
+
+library instantiations
+  import: shared
+  build-depends:
+    , vex-indef
+    , base >=4.16
+    , basics
+  reexported-modules:
+    , Vector.Bool.Internal
+    , Vector.Word8.Internal
+    , Vector.Word16.Internal
+    , Vector.Word32.Internal
+    , Vector.Word64.Internal
+    , Vector.Int64.Internal
+  mixins:
+    vex-indef (Vector.Unboxed as Vector.Bool.Internal)
+      requires (Element as Basics.BitBool, Array as Basics.ByteArray),
+    vex-indef (Vector.Unboxed as Vector.Word8.Internal)
+      requires (Element as Basics.Word8, Array as Basics.ByteArray),
+    vex-indef (Vector.Unboxed as Vector.Word16.Internal)
+      requires (Element as Basics.Word16, Array as Basics.ByteArray),
+    vex-indef (Vector.Unboxed as Vector.Word32.Internal)
+      requires (Element as Basics.Word32, Array as Basics.ByteArray),
+    vex-indef (Vector.Unboxed as Vector.Word64.Internal)
+      requires (Element as Basics.Word64, Array as Basics.ByteArray),
+    vex-indef (Vector.Unboxed as Vector.Int64.Internal)
+      requires (Element as Basics.Int64, Array as Basics.ByteArray),
+
+library
+  import: shared
+  exposed-modules:
+    ArrowBuilder
+    ArrowFile
+    ArrowMessage
+    ArrowSchema
+  build-depends:
+    , base >=4.16
+    -- , vext
+    -- , vext:internal
+    , haskell-arrow-interchange:instantiations
+    , text-short
+    , flatbuffers-builder
+    , text >=2.0
+    , byte-order >=0.1.3
+    , run-st >=0.1.1
+    , array-builder
+    , byteslice
+    , bytebuild >=0.3.12
+    , contiguous >=0.6
+  hs-source-dirs: src
+  default-language: GHC2021
+
+executable arrow-message-json-to-binary
+  import: shared
+  default-language: GHC2021
+  hs-source-dirs: app
+  main-is: ArrowMessageJsonToBinary.hs
+  build-depends:
+    , haskell-arrow-interchange
+    , aeson
+
+executable arrow-footer-json-to-binary
+  import: shared
+  default-language: GHC2021
+  hs-source-dirs: app
+  main-is: ArrowFooterJsonToBinary.hs
+  build-depends:
+    , haskell-arrow-interchange
+    , aeson
+
+executable csv-to-arrow
+  import: shared
+  default-language: GHC2021
+  hs-source-dirs: app
+  main-is: CsvToArrow.hs
+  build-depends:
+    , haskell-arrow-interchange
+    , haskell-arrow-interchange:instantiations
+    , vex
+    , ip >=1.7.6

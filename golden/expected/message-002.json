@@ -1,0 +1,21 @@
+{
+  "version": "V5",
+  "header_type": "RecordBatch",
+  "header": {
+    "length": 5,
+    "nodes": [
+      {
+        "length": 100,
+        "null_count": 0
+      },
+      {
+        "length": 100,
+        "null_count": 5
+      }
+    ],
+    "buffers": [
+
+    ]
+  },
+  "bodyLength": 1000
+}
