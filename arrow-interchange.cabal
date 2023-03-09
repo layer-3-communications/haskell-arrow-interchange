@@ -1,5 +1,5 @@
 cabal-version:      3.4
-name:               haskell-arrow-interchange
+name:               arrow-interchange
 version:            0.1.0.0
 -- synopsis:
 -- description:
@@ -62,7 +62,7 @@ library
     , base >=4.16
     -- , vext
     -- , vext:internal
-    , haskell-arrow-interchange:instantiations
+    , arrow-interchange:instantiations
     , text-short
     , flatbuffers-builder
     , text >=2.0
@@ -81,7 +81,7 @@ executable arrow-message-json-to-binary
   hs-source-dirs: app
   main-is: ArrowMessageJsonToBinary.hs
   build-depends:
-    , haskell-arrow-interchange
+    , arrow-interchange
     , aeson
 
 executable arrow-footer-json-to-binary
@@ -90,7 +90,7 @@ executable arrow-footer-json-to-binary
   hs-source-dirs: app
   main-is: ArrowFooterJsonToBinary.hs
   build-depends:
-    , haskell-arrow-interchange
+    , arrow-interchange
     , aeson
 
 executable csv-to-arrow
@@ -99,7 +99,7 @@ executable csv-to-arrow
   hs-source-dirs: app
   main-is: CsvToArrow.hs
   build-depends:
-    , haskell-arrow-interchange
-    , haskell-arrow-interchange:instantiations
+    , arrow-interchange
+    , arrow-interchange:instantiations
     , vex
     , ip >=1.7.6
