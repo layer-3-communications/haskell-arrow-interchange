@@ -9,6 +9,10 @@ module ArrowBuilder
   ( Column(..)
   , NamedColumn(..)
   , encode
+    -- * Streaming
+  , encodeBatch
+  , encodePreludeAndSchema
+  , encodeFooterAndEpilogue
   ) where
 
 import ArrowFile
@@ -18,7 +22,6 @@ import ArrowMessage
 import Data.Word
 import Data.Int
 
-import Data.Text.Short (ShortText)
 import Data.Primitive (SmallArray,ByteArray)
 import Data.Text (Text)
 import Arithmetic.Types (Fin(Fin))
@@ -48,7 +51,6 @@ data Column n
   | PrimitiveWord32 !(Word32.Vector n)
   | PrimitiveWord64 !(Word64.Vector n)
   | PrimitiveInt64 !(Int64.Vector n)
-  -- x | VariableBinaryShortText !(Unlifted.Vector ('Known n) ShortText#)
 
 data NamedColumn n = NamedColumn
   { name :: !Text
@@ -118,53 +120,82 @@ makeSchema !namedColumns = Schema
   , fields = fmap namedColumnToField namedColumns
   }
 
-encode :: Arithmetic.Nat n -> SmallArray (NamedColumn n) -> Catenable.Builder
-encode !n !namedColumns =
-  let partA = 
-        asciiArrow1 -- len 6
-        <>
-        Catenable.bytes (Bytes.replicate 2 0x00) -- len 2
-        <>
-        continuation -- len 4
-        <>
-        Catenable.byteArray (Bounded.run (Nat.constant @4) (Bounded.word32LE (fromIntegral (encodedSchemaMessageLength + encodedSchemaMessagePadding)))) -- len 4
-        <>
-        Catenable.bytes encodedSchemaMessage <> Catenable.bytes (Bytes.replicate encodedSchemaMessagePadding 0x00) -- 8 divides this evenly
-      body = foldMap
+-- | Encodes the schema and the header that comes before it.
+-- Length is always a multiple of 64 bytes.
+encodePreludeAndSchema :: Schema -> Catenable.Builder
+encodePreludeAndSchema !schema =
+  asciiArrow1 -- len 6
+  <>
+  Catenable.bytes (Bytes.replicate 2 0x00) -- len 2
+  <>
+  continuation -- len 4
+  <>
+  Catenable.byteArray (Bounded.run (Nat.constant @4) (Bounded.word32LE (fromIntegral (encodedSchemaMessageLength + encodedSchemaMessagePadding)))) -- len 4
+  <>
+  Catenable.bytes encodedSchemaMessage
+  <>
+  Catenable.bytes (Bytes.replicate encodedSchemaMessagePadding 0x00)
+  where
+  schemaMessage = Message{header=MessageHeaderSchema schema,bodyLength=0}
+  encodedSchemaMessage = Chunks.concat (Catenable.run (B.encode (encodeMessage schemaMessage)))
+  encodedSchemaMessageLength = Bytes.length encodedSchemaMessage
+  encodedSchemaMessagePadding = computePadding64 encodedSchemaMessageLength
+
+-- | Includes the following:
+--
+-- * Continuation bytes
+-- * Metadata length (4 bytes)
+-- * Metadata
+-- * Payloads
+--
+-- A 'Block' is provided so that the caller has the information needed to
+-- construct the footer. This 'Block' has the offset set to zero (we do
+-- not have enough data to compute it here), so the caller must reset that
+-- field.
+encodeBatch ::
+     Arithmetic.Nat n
+  -> SmallArray (NamedColumn n)
+  -> (Catenable.Builder,Block)
+encodeBatch !n !namedColumns =
+  let body = foldMap
         (\BufferWithPayload{payload,padding} ->
           Catenable.bytes (Bytes.fromByteArray payload)
           <> 
           Catenable.bytes (Bytes.replicate padding 0x00)
         ) buffersWithPayload
       bodyLength = Catenable.length body
+      buffersWithPayload = Exts.fromList (makeBuffers n namedColumns) :: SmallArray BufferWithPayload
       recordBatch = makeRecordBatch n buffersWithPayload namedColumns
-      encodedRecordBatch = B.encode (encodeMessage (Message{header=MessageHeaderRecordBatch recordBatch,bodyLength=fromIntegral bodyLength}))
+      encodedRecordBatch = B.encode $ encodeMessage $ Message
+        { header=MessageHeaderRecordBatch recordBatch
+        , bodyLength=fromIntegral bodyLength
+        }
       encodedRecordBatchLength = Catenable.length encodedRecordBatch
-      partALen = Catenable.length partA -- 8 divides this length evenly
-      -- We can figure out the length of partB before we build it.
-      -- It's just the length of the encoded record batch, plus 4 bytes
-      -- for the continuation, plus 4 more bytes for the padded record batch length
-      partBLen = 8 + Catenable.length encodedRecordBatch -- unknown length, we must pad part B
-      partABLen = partALen + partBLen
-      partBPadding = computePadding64 partABLen
+      partBLen = 8 + encodedRecordBatchLength
+      partBPadding = computePadding64 partBLen
+      partBPaddedLength = partBLen + partBPadding
       partB =
         continuation -- len 4
         <>
-        Catenable.byteArray (Bounded.run (Nat.constant @4) (Bounded.word32LE (fromIntegral (encodedRecordBatchLength + partBPadding)))) -- len 4
+        Catenable.byteArray (Bounded.run (Nat.constant @4) (Bounded.word32LE (fromIntegral (partBPaddedLength - 8)))) -- len 4
         <>
         encodedRecordBatch -- len unknown
-      partBLenWithPadding = partBLen + partBPadding
-      encodedFooter = B.encode (encodeFooter (makeFooter partALen partBLenWithPadding bodyLength schema))
+        <>
+        Catenable.bytes (Bytes.replicate partBPadding 0x00) -- after this, we are 64-byte aligned
+        <>
+        body
+      block = Block
+        { offset = 0
+        , metaDataLength = fromIntegral @Int @Int32 partBPaddedLength
+        , bodyLength = fromIntegral @Int @Int64 bodyLength
+        }
+   in (partB,block)
+
+encodeFooterAndEpilogue :: Schema -> SmallArray Block -> Catenable.Builder
+encodeFooterAndEpilogue !schema !blocks = 
+  let encodedFooter = B.encode (encodeFooter (makeFooter blocks schema))
       encodedFooterLength = Catenable.length encodedFooter
-   in partA
-      <>
-      partB
-      <>
-      Catenable.bytes (Bytes.replicate partBPadding 0x00) -- after this, we are 64-byte aligned
-      <>
-      body
-      <>
-      continuation
+   in continuation
       <>
       eos
       <>
@@ -173,13 +204,24 @@ encode !n !namedColumns =
       Catenable.bytes (Bytes.fromByteArray (Bounded.run (Nat.constant @4) (Bounded.word32LE (fromIntegral encodedFooterLength)))) -- len 4
       <>
       asciiArrow1
+ 
+-- | Encode a single batch of records.
+encode :: Arithmetic.Nat n -> SmallArray (NamedColumn n) -> Catenable.Builder
+encode !n !namedColumns = 
+  let partA = encodePreludeAndSchema schema
+      (partB,block) = encodeBatch n namedColumns
+      block' = Block
+        { offset=fromIntegral (Catenable.length partA)
+        , metaDataLength = block.metaDataLength
+        , bodyLength = block.bodyLength
+        }
+   in partA
+      <>
+      partB
+      <>
+      encodeFooterAndEpilogue schema (C.singleton block')
   where
   schema = makeSchema namedColumns
-  schemaMessage = Message{header=MessageHeaderSchema schema,bodyLength=0}
-  encodedSchemaMessage = Chunks.concat (Catenable.run (B.encode (encodeMessage schemaMessage)))
-  encodedSchemaMessageLength = Bytes.length encodedSchemaMessage
-  encodedSchemaMessagePadding = 8 - mod (Bytes.length encodedSchemaMessage) 8
-  buffersWithPayload = Exts.fromList (makeBuffers n namedColumns) :: SmallArray BufferWithPayload
 
 continuation :: Catenable.Builder
 continuation = Catenable.bytes (Bytes.replicate 4 0xFF)
@@ -206,13 +248,9 @@ makeRecordBatch !n buffersWithPayload !cols = RecordBatch
   , buffers = fmap (\x -> x.buffer) buffersWithPayload
   }
 
-makeFooter :: Int -> Int -> Int -> Schema -> Footer
-makeFooter !offset !metaDataLength !bodyLength !schema = Footer
+makeFooter :: SmallArray Block -> Schema -> Footer
+makeFooter !blocks !schema = Footer
   { schema = schema
   , dictionaries = mempty
-  , recordBatches = C.singleton Block
-    { offset = fromIntegral @Int @Int64 offset
-    , metaDataLength = fromIntegral @Int @Int32 metaDataLength
-    , bodyLength = fromIntegral @Int @Int64 bodyLength
-    }
+  , recordBatches = blocks
   }
