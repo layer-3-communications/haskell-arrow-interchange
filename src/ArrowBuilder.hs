@@ -119,7 +119,7 @@ namedColumnToField NamedColumn{name,column} = Field
 -- | Convert named columns to a description of the schema.
 makeSchema :: SmallArray (NamedColumn n) -> Schema
 makeSchema !namedColumns = Schema
-  { endianness = 1
+  { endianness = 0
   , fields = fmap namedColumnToField namedColumns
   }
 
