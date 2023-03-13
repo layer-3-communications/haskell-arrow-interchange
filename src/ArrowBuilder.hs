@@ -9,6 +9,8 @@ module ArrowBuilder
   ( Column(..)
   , NamedColumn(..)
   , encode
+    -- * Schema
+  , makeSchema
     -- * Streaming
   , encodeBatch
   , encodePreludeAndSchema
@@ -114,6 +116,7 @@ namedColumnToField NamedColumn{name,column} = Field
   , children = mempty
   }
 
+-- | Convert named columns to a description of the schema.
 makeSchema :: SmallArray (NamedColumn n) -> Schema
 makeSchema !namedColumns = Schema
   { endianness = 1
@@ -191,6 +194,7 @@ encodeBatch !n !namedColumns =
         }
    in (partB,block)
 
+-- | Encode the footer and the epilogue.
 encodeFooterAndEpilogue :: Schema -> SmallArray Block -> Catenable.Builder
 encodeFooterAndEpilogue !schema !blocks = 
   let encodedFooter = B.encode (encodeFooter (makeFooter blocks schema))
