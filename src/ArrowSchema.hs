@@ -6,6 +6,7 @@ module ArrowSchema
   , Type(..)
   , Schema(..)
   , TableInt(..)
+  , TableFixedSizeBinary(..)
   , Buffer(..)
   , encodeSchema
   ) where
@@ -42,7 +43,12 @@ data Field = Field
 data Type
   = Null
   | Int TableInt
+  | FixedSizeBinary TableFixedSizeBinary
   | Bool
+
+newtype TableFixedSizeBinary = TableFixedSizeBinary
+  { byteWidth :: Int
+  }
 
 data TableInt = TableInt
   { bitWidth :: !Int32

@@ -36,6 +36,8 @@ library instantiations
     , Vector.Word16.Internal
     , Vector.Word32.Internal
     , Vector.Word64.Internal
+    , Vector.Word128.Internal
+    , Vector.Word256.Internal
     , Vector.Int64.Internal
   mixins:
     vex-indef (Vector.Unboxed as Vector.Bool.Internal)
@@ -48,6 +50,10 @@ library instantiations
       requires (Element as Basics.Word32, Array as Basics.ByteArray),
     vex-indef (Vector.Unboxed as Vector.Word64.Internal)
       requires (Element as Basics.Word64, Array as Basics.ByteArray),
+    vex-indef (Vector.Unboxed as Vector.Word128.Internal)
+      requires (Element as Basics.Word128, Array as Basics.ByteArray),
+    vex-indef (Vector.Unboxed as Vector.Word256.Internal)
+      requires (Element as Basics.Word256, Array as Basics.ByteArray),
     vex-indef (Vector.Unboxed as Vector.Int64.Internal)
       requires (Element as Basics.Int64, Array as Basics.ByteArray),
 

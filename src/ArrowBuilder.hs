@@ -44,6 +44,8 @@ import qualified Vector.Word8.Internal as Word8
 import qualified Vector.Word16.Internal as Word16
 import qualified Vector.Word32.Internal as Word32
 import qualified Vector.Word64.Internal as Word64
+import qualified Vector.Word128.Internal as Word128
+import qualified Vector.Word256.Internal as Word256
 import qualified Vector.Int64.Internal as Int64
 import qualified Vector.Bool.Internal as Bool
 
@@ -52,6 +54,8 @@ data Column n
   | PrimitiveWord16 !(Word16.Vector n)
   | PrimitiveWord32 !(Word32.Vector n)
   | PrimitiveWord64 !(Word64.Vector n)
+  | PrimitiveWord128 !(Word128.Vector n)
+  | PrimitiveWord256 !(Word256.Vector n)
   | PrimitiveInt64 !(Int64.Vector n)
 
 data NamedColumn n = NamedColumn
@@ -90,6 +94,7 @@ makeBuffers !n !cols = go 0 [] 0
             PrimitiveWord16 v -> finishPrimitive (Word16.expose v)
             PrimitiveWord32 v -> finishPrimitive (Word32.expose v)
             PrimitiveWord64 v -> finishPrimitive (Word64.expose v)
+            PrimitiveWord256 v -> finishPrimitive (Word256.expose v)
             PrimitiveInt64 v -> finishPrimitive (Int64.expose v)
     else List.reverse acc
 
@@ -105,6 +110,8 @@ columnToType = \case
   PrimitiveWord16{} -> Int TableInt{bitWidth=16,isSigned=False}
   PrimitiveWord32{} -> Int TableInt{bitWidth=32,isSigned=False}
   PrimitiveWord64{} -> Int TableInt{bitWidth=64,isSigned=False}
+  PrimitiveWord128{} -> FixedSizeBinary TableFixedSizeBinary{byteWidth=16}
+  PrimitiveWord256{} -> FixedSizeBinary TableFixedSizeBinary{byteWidth=32}
   PrimitiveInt64{} -> Int TableInt{bitWidth=64,isSigned=True}
 
 namedColumnToField :: NamedColumn n -> Field
