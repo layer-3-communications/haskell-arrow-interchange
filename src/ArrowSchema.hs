@@ -47,7 +47,7 @@ data Type
   | Bool
 
 newtype TableFixedSizeBinary = TableFixedSizeBinary
-  { byteWidth :: Int
+  { byteWidth :: Int32
   }
 
 data TableInt = TableInt
@@ -76,9 +76,14 @@ encodeTableInt TableInt{bitWidth,isSigned} = B.Object $ Exts.fromList
   , B.boolean isSigned
   ]
 
+encodeTableBinary :: TableFixedSizeBinary -> B.Object
+encodeTableBinary TableFixedSizeBinary{byteWidth} = B.Object $ Exts.fromList
+  [ B.signed32 byteWidth
+  ]
+
 encodeType :: Type -> B.Union
 encodeType = \case
   Null -> B.Union{tag=1,object=B.Object mempty}
   Int table -> B.Union{tag=2,object=encodeTableInt table}
   Bool -> B.Union{tag=6,object=B.Object mempty}
-
+  FixedSizeBinary table -> B.Union{tag=15,object=encodeTableBinary table}
