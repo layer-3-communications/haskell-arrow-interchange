@@ -39,6 +39,7 @@ library instantiations
     , Vector.Word128.Internal
     , Vector.Word256.Internal
     , Vector.Int64.Internal
+    , Vector.ShortText.Internal
   mixins:
     vex-indef (Vector.Unboxed as Vector.Bool.Internal)
       requires (Element as Basics.BitBool, Array as Basics.ByteArray),
@@ -56,6 +57,8 @@ library instantiations
       requires (Element as Basics.Word256, Array as Basics.ByteArray),
     vex-indef (Vector.Unboxed as Vector.Int64.Internal)
       requires (Element as Basics.Int64, Array as Basics.ByteArray),
+    vex-indef (Vector.Unboxed as Vector.ShortText.Internal)
+      requires (Element as Basics.ShortText, Array as Basics.ArrayArray),
 
 library
   import: shared
@@ -78,6 +81,7 @@ library
     , byteslice
     , bytebuild >=0.3.12
     , contiguous >=0.6
+    , bytestring >=0.11.4
   hs-source-dirs: src
   default-language: GHC2021
 
@@ -109,3 +113,4 @@ executable csv-to-arrow
     , arrow-interchange:instantiations
     , vex
     , ip >=1.7.6
+    , text-short

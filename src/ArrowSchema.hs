@@ -44,6 +44,7 @@ data Type
   = Null
   | Int TableInt
   | FixedSizeBinary TableFixedSizeBinary
+  | Utf8
   | Bool
 
 newtype TableFixedSizeBinary = TableFixedSizeBinary
@@ -85,5 +86,6 @@ encodeType :: Type -> B.Union
 encodeType = \case
   Null -> B.Union{tag=1,object=B.Object mempty}
   Int table -> B.Union{tag=2,object=encodeTableInt table}
+  Utf8 -> B.Union{tag=5,object=B.Object mempty}
   Bool -> B.Union{tag=6,object=B.Object mempty}
   FixedSizeBinary table -> B.Union{tag=15,object=encodeTableBinary table}

@@ -13,10 +13,13 @@ import Control.Monad.ST (stToIO)
 import Control.Monad (when)
 import GHC.Exts (RealWorld)
 import Net.Types (IPv4(IPv4))
+import Data.Text.Short (ShortText)
 
 import qualified Arithmetic.Fin as Fin
+import qualified Arithmetic.Lte as Lte
 import qualified Arithmetic.Nat as Nat
 import qualified Arithmetic.Types as Arithmetic
+import qualified ArrowBuilder
 import qualified Data.Builder.Catenable.Bytes as Catenable
 import qualified Data.Bytes as Bytes
 import qualified Data.Bytes.Chunks as Chunks
@@ -24,17 +27,18 @@ import qualified Data.Bytes.Text.Latin1 as Latin1
 import qualified Data.List as List
 import qualified Data.Primitive as PM
 import qualified Data.Text as T
+import qualified Data.Text.Short as TS
 import qualified GHC.Exts as Exts
 import qualified Net.IPv4 as IPv4
-import qualified ArrowBuilder
 import qualified System.IO as IO
+import qualified Vector.Bool.Internal as Bool
 import qualified Vector.Boxed as Boxed
-import qualified Vector.Word8.Internal as Word8
+import qualified Vector.Int64.Internal as Int64
+import qualified Vector.ShortText.Internal as ShortText
 import qualified Vector.Word16.Internal as Word16
 import qualified Vector.Word32.Internal as Word32
 import qualified Vector.Word64.Internal as Word64
-import qualified Vector.Int64.Internal as Int64
-import qualified Vector.Bool.Internal as Bool
+import qualified Vector.Word8.Internal as Word8
 
 -- The header row of the CSV needs to look like this:
 --
@@ -154,6 +158,23 @@ decodeColumn !n DecodedName{name,ty} xs = do
       dst' <- stToIO (Int64.unsafeFreeze dst)
       mask' <- stToIO (Bool.unsafeFreeze mask)
       pure NamedColumn{name,mask=mask',column=ArrowBuilder.PrimitiveInt64 dst'}
+    String -> do
+      dst <- stToIO (ShortText.uninitialized n)
+      stToIO (ShortText.set Lte.reflexive dst Nat.zero n mempty)
+      mask <- stToIO (Bool.uninitialized n)
+      zeroBoolArray mask
+      Fin.ascendM_ n $ \(Fin ix lt) -> do
+        let str = Boxed.index lt xs' ix
+        if Bytes.null str
+          then pure ()
+          else case TS.fromShortByteString (Bytes.toShortByteString str) of
+            Nothing -> fail "failed to decode utf-8 value"
+            Just (s :: ShortText) -> stToIO $ do
+              Bool.write lt mask ix True
+              ShortText.write lt dst ix s
+      dst' <- stToIO (ShortText.unsafeFreeze dst)
+      mask' <- stToIO (Bool.unsafeFreeze mask)
+      pure NamedColumn{name,mask=mask',column=ArrowBuilder.VariableBinaryUtf8 dst'}
 
 zeroBoolArray :: Bool.MutableVector RealWorld n -> IO ()
 zeroBoolArray v = do
@@ -170,6 +191,7 @@ decodeName x = case T.splitOn (T.singleton ':') x of
       "u32" -> pure Unsigned32
       "u64" -> pure Unsigned64
       "s64" -> pure Signed64
+      "str" -> pure String
       _ -> fail ("unrecognized type: " ++ T.unpack tyStr)
     pure DecodedName{name,ty}
   _ -> fail ("failed to decode header: " ++ T.unpack x)
@@ -185,3 +207,4 @@ data Ty
   | Unsigned32
   | Unsigned64
   | Signed64
+  | String

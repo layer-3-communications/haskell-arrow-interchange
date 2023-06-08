@@ -3,6 +3,7 @@
 {-# language MagicHash #-}
 {-# language DuplicateRecordFields #-}
 {-# language TypeApplications #-}
+{-# language TypeOperators #-}
 {-# language OverloadedRecordDot #-}
 
 module ArrowBuilder
@@ -24,13 +25,17 @@ import ArrowMessage
 import Data.Word
 import Data.Int
 
-import Data.Primitive (SmallArray,ByteArray)
+import Control.Monad.ST (runST)
+import Data.Primitive (SmallArray,ByteArray(ByteArray))
 import Data.Text (Text)
 import Arithmetic.Types (Fin(Fin))
+import GHC.TypeNats (type (+))
 
 import qualified Arithmetic.Fin as Fin
 import qualified Arithmetic.Types as Arithmetic
 import qualified Arithmetic.Nat as Nat
+import qualified Arithmetic.Lt as Lt
+import qualified Arithmetic.Lte as Lte
 import qualified Data.List as List
 import qualified Data.Primitive.Contiguous as C
 import qualified Data.Primitive as PM
@@ -48,6 +53,10 @@ import qualified Vector.Word128.Internal as Word128
 import qualified Vector.Word256.Internal as Word256
 import qualified Vector.Int64.Internal as Int64
 import qualified Vector.Bool.Internal as Bool
+import qualified Vector.ShortText.Internal as ShortText
+import qualified Data.ByteString.Short as SBS
+import qualified Data.ByteString.Short.Internal as SBS
+import qualified Data.Text.Short as TS
 
 data Column n
   = PrimitiveWord8 !(Word8.Vector n)
@@ -57,6 +66,7 @@ data Column n
   | PrimitiveWord128 !(Word128.Vector n)
   | PrimitiveWord256 !(Word256.Vector n)
   | PrimitiveInt64 !(Int64.Vector n)
+  | VariableBinaryUtf8 !(ShortText.Vector n)
 
 data NamedColumn n = NamedColumn
   { name :: !Text
@@ -96,11 +106,65 @@ makeBuffers !n !cols = go 0 [] 0
             PrimitiveWord64 v -> finishPrimitive (Word64.expose v)
             PrimitiveWord256 v -> finishPrimitive (Word256.expose v)
             PrimitiveInt64 v -> finishPrimitive (Int64.expose v)
+            VariableBinaryUtf8 v ->
+              let (offsets, totalPayloadSize) = makeVariableBinaryOffsets n v
+                  exposed = unsafeConcatenate totalPayloadSize n v
+                  rawSize = PM.sizeofByteArray exposed
+                  exposedOffsets = Word32.expose offsets
+                  rawOffsetsSize = PM.sizeofByteArray exposedOffsets
+                  exposedMask = Bool.expose mask
+                  rawMaskSize = PM.sizeofByteArray exposedMask
+                  offsetsPadding = computePadding64 rawOffsetsSize
+                  elementPadding = computePadding64 rawSize
+                  maskPadding = computePadding64 rawMaskSize
+                  acc' = consVariableBinary pos rawSize rawMaskSize rawOffsetsSize elementPadding maskPadding offsetsPadding exposed exposedMask exposedOffsets acc
+               in go (ix + 1) acc' (pos + rawSize + elementPadding + rawMaskSize + maskPadding + rawOffsetsSize + offsetsPadding)
     else List.reverse acc
 
+unsafeConcatenate :: Int -> Arithmetic.Nat n -> ShortText.Vector n -> ByteArray
+unsafeConcatenate !sz !n !v = runST $ do
+  dst <- PM.newByteArray sz
+  total <- Fin.ascendM n (0 :: Int) $ \(Fin ix lt) !offset -> do
+    let val = ShortText.index lt v ix
+    case TS.toShortByteString val of
+      SBS.SBS b -> do
+        let len = PM.sizeofByteArray (ByteArray b)
+        PM.copyByteArray dst offset (ByteArray b) 0 len
+        pure (offset + len)
+  if total == sz
+    then PM.unsafeFreezeByteArray dst
+    else errorWithoutStackTrace "arrow-interchange:ArrowBuilder.unsafeConcatenate"
+
+-- Returns the offsets vector and the total size of the concatenated strings
+makeVariableBinaryOffsets :: forall n. Arithmetic.Nat n -> ShortText.Vector n -> (Word32.Vector (n + 1), Int)
+makeVariableBinaryOffsets !n !src = runST $ do
+  dst <- Word32.uninitialized (Nat.succ n)
+  total <- Fin.ascendM n (0 :: Int) $ \(Fin ix lt) !offset -> do
+    let val = ShortText.index lt src ix
+    Word32.write (Lt.weakenR @1 lt) dst ix (fromIntegral offset :: Word32)
+    pure (offset + SBS.length (TS.toShortByteString val))
+  Word32.write (Lt.incrementL @n Lt.zero) dst n (fromIntegral total :: Word32)
+  dst' <- Word32.unsafeFreeze dst
+  pure (dst',total)
+
+-- We cons these backwards since the list gets reversed at the end.
 consPrimitive :: Int -> Int -> Int -> Int -> Int -> ByteArray -> ByteArray -> [BufferWithPayload] -> [BufferWithPayload]
 consPrimitive !pos !rawSize !rawMaskSize !elementPadding !maskPadding !exposed !exposedMask !acc =
     BufferWithPayload {buffer=Buffer{offset=fromIntegral (pos + rawMaskSize + maskPadding),length=fromIntegral @Int @Int64 rawSize},payload=exposed,padding=elementPadding}
+  : BufferWithPayload {buffer=Buffer{offset=fromIntegral pos,length=fromIntegral @Int @Int64 rawMaskSize},payload=exposedMask,padding=maskPadding}
+  : acc
+
+consVariableBinary :: Int -> Int -> Int -> Int -> Int -> Int -> Int -> ByteArray -> ByteArray -> ByteArray -> [BufferWithPayload] -> [BufferWithPayload]
+consVariableBinary !pos !rawSize !rawMaskSize !rawOffsetsSize !elementPadding !maskPadding !offsetsPadding !exposed !exposedMask !exposedOffsets !acc =
+    BufferWithPayload
+      { buffer=Buffer
+        { offset=fromIntegral (pos + rawMaskSize + maskPadding + rawOffsetsSize + offsetsPadding)
+        , length=fromIntegral @Int @Int64 rawSize
+        }
+      , payload=exposed
+      , padding=elementPadding
+      }
+  : BufferWithPayload {buffer=Buffer{offset=fromIntegral (pos + rawMaskSize + maskPadding),length=fromIntegral @Int @Int64 rawOffsetsSize},payload=exposedOffsets,padding=offsetsPadding}
   : BufferWithPayload {buffer=Buffer{offset=fromIntegral pos,length=fromIntegral @Int @Int64 rawMaskSize},payload=exposedMask,padding=maskPadding}
   : acc
 
@@ -113,6 +177,7 @@ columnToType = \case
   PrimitiveWord128{} -> FixedSizeBinary TableFixedSizeBinary{byteWidth=16}
   PrimitiveWord256{} -> FixedSizeBinary TableFixedSizeBinary{byteWidth=32}
   PrimitiveInt64{} -> Int TableInt{bitWidth=64,isSigned=True}
+  VariableBinaryUtf8{} -> Utf8
 
 namedColumnToField :: NamedColumn n -> Field
 namedColumnToField NamedColumn{name,column} = Field
