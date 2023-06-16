@@ -62,6 +62,8 @@ library instantiations
 
 library
   import: shared
+  other-modules:
+    ArrowBuilderNoColumn
   exposed-modules:
     ArrowBuilder
     ArrowFile

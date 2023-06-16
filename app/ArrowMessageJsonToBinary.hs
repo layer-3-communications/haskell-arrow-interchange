@@ -15,6 +15,8 @@ import qualified Data.List as List
 import qualified Flatbuffers.Builder as B
 import qualified System.IO as IO
 
+$(deriveFromJSON defaultOptions ''CompressionType)
+$(deriveFromJSON defaultOptions ''BodyCompression)
 $(deriveFromJSON defaultOptions ''Buffer)
 $(deriveFromJSON defaultOptions ''TableInt)
 $(deriveFromJSON defaultOptions ''TableFixedSizeBinary)

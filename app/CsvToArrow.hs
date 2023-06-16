@@ -1,19 +1,21 @@
 {-# language DuplicateRecordFields #-}
+{-# language LambdaCase #-}
 {-# language OverloadedStrings #-}
 
-import Data.Text (Text)
-import Data.Bytes (Bytes)
-import ArrowBuilder (NamedColumn(..))
-import Data.Int
-import Data.Word
 import Arithmetic.Types (Fin(Fin))
-import Text.Read (readMaybe)
-import Data.Maybe (fromMaybe)
-import Control.Monad.ST (stToIO)
+import ArrowBuilder (NamedColumn(..),Compression(..))
 import Control.Monad (when)
+import Control.Monad.ST (stToIO)
+import Data.Bytes (Bytes)
+import Data.Int
+import Data.Maybe (fromMaybe)
+import Data.Text (Text)
+import Data.Text.Short (ShortText)
+import Data.Word
 import GHC.Exts (RealWorld)
 import Net.Types (IPv4(IPv4))
-import Data.Text.Short (ShortText)
+import Text.Read (readMaybe)
+import System.Environment (getArgs)
 
 import qualified Arithmetic.Fin as Fin
 import qualified Arithmetic.Lte as Lte
@@ -45,6 +47,11 @@ import qualified Vector.Word8.Internal as Word8
 -- > age:s32,height:s64,first_name:string
 main :: IO ()
 main = do
+  compression <- getArgs >>= \case
+    [] -> pure None
+    ["--lz4"] -> pure Lz4
+    ["--uncompressed"] -> pure None
+    _ -> fail "Bad flags, expected --lz4 or --uncompressed"
   contents <- Chunks.hGetContents IO.stdin
   let bytes = Chunks.concat contents
   let rows = List.filter (not . Bytes.null) (Bytes.split 0x0A bytes)
@@ -65,7 +72,7 @@ main = do
       Nat.with rowsLen $ \n -> do
         cols <- decodeColumns n (zip decodedNames dataColumns)
         IO.withFile "output.arrow" IO.WriteMode $ \h -> do
-          Chunks.hPut h (Catenable.run (ArrowBuilder.encode n (Exts.fromList cols)))
+          Chunks.hPut h (Catenable.run (ArrowBuilder.encode n compression (Exts.fromList cols)))
 
 decodeColumns :: Arithmetic.Nat n -> [(DecodedName,[Bytes])] -> IO [NamedColumn n]
 decodeColumns !n = traverse (uncurry (decodeColumn n))

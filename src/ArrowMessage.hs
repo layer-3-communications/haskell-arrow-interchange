@@ -6,6 +6,8 @@ module ArrowMessage
   , FieldNode(..)
   , RecordBatch(..)
   , MessageHeader(..)
+  , CompressionType(..)
+  , BodyCompression(..)
   , encodeMessage
   , encodeRecordBatch
   ) where
@@ -18,6 +20,7 @@ import Data.Primitive (SmallArray,ByteArray)
 import Control.Monad.ST.Run (runByteArrayST)
 import Data.Int
 
+import qualified Data.Primitive.Contiguous as Contiguous
 import qualified Flatbuffers.Builder as B
 import qualified Data.Primitive as PM
 import qualified GHC.Exts as Exts
@@ -40,7 +43,19 @@ data RecordBatch = RecordBatch
   { length :: Int64
   , nodes :: !(SmallArray FieldNode)
   , buffers :: !(SmallArray Buffer)
+  , compression :: !(Maybe BodyCompression)
   }
+
+-- We omit the method field since the only value for BodyCompressionMethod
+-- is BUFFER.
+newtype BodyCompression = BodyCompression
+  { codec :: CompressionType
+  }
+
+-- | We should also add zstd, but we do not have bindings for it available,
+-- so I am leaving it out for now.
+data CompressionType
+  = Lz4Frame
 
 data MessageHeader
   = MessageHeaderSchema !Schema
@@ -74,11 +89,16 @@ serializeBuffers !nodes = runByteArrayST $ do
   go 0
 
 encodeRecordBatch :: RecordBatch -> B.Object
-encodeRecordBatch RecordBatch{length,nodes,buffers} = B.Object $ Exts.fromList
-  [ B.signed64 length
-  , B.structs (PM.sizeofSmallArray nodes) (serializeNodes nodes)
-  , B.structs (PM.sizeofSmallArray buffers) (serializeBuffers buffers)
-  ]
+encodeRecordBatch RecordBatch{length,nodes,buffers,compression} =
+  case compression of
+    Nothing -> B.Object (Contiguous.tripleton v0 v1 v2)
+    Just (BodyCompression Lz4Frame) ->
+      let v3 = B.FieldObject (B.Object mempty)
+       in B.Object (Contiguous.quadrupleton v0 v1 v2 v3)
+  where
+  v0 = B.signed64 length
+  v1 = B.structs (PM.sizeofSmallArray nodes) (serializeNodes nodes)
+  v2 = B.structs (PM.sizeofSmallArray buffers) (serializeBuffers buffers)
 
 encodeMessageHeader :: MessageHeader -> B.Union
 encodeMessageHeader = \case
