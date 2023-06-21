@@ -7,7 +7,7 @@
 {-# language OverloadedRecordDot #-}
 
 module ArrowBuilderNoColumn
-  ( BufferWithPayload(..)
+  ( Payload(..)
   , Compression(..)
   , makeFooter
   , encodePreludeAndSchema
@@ -19,7 +19,8 @@ module ArrowBuilderNoColumn
   , continuation
   , computePadding64
   , makeFooter
-  , encodeBuffersWithPayload
+  , encodePayloadsUncompressed
+  , encodePayloadsLz4
   , encodePartB
   , marshallCompression
   ) where
@@ -32,6 +33,7 @@ import Data.Word
 import Data.Int
 
 import Control.Monad.ST (runST)
+import Data.Foldable (foldl')
 import Data.Primitive (SmallArray,ByteArray(ByteArray))
 import Data.Text (Text)
 import Arithmetic.Types (Fin(Fin))
@@ -42,7 +44,9 @@ import qualified Arithmetic.Types as Arithmetic
 import qualified Arithmetic.Nat as Nat
 import qualified Arithmetic.Lt as Lt
 import qualified Arithmetic.Lte as Lte
+import qualified Lz4.Frame as Lz4
 import qualified Data.List as List
+import qualified Data.Bytes.Encode.LittleEndian as LittleEndian
 import qualified Data.Primitive.Contiguous as C
 import qualified Data.Primitive as PM
 import qualified GHC.Exts as Exts
@@ -64,10 +68,9 @@ import qualified Data.ByteString.Short as SBS
 import qualified Data.ByteString.Short.Internal as SBS
 import qualified Data.Text.Short as TS
 
-data BufferWithPayload = BufferWithPayload
-  { buffer :: !Buffer
-  , payload :: !ByteArray
-  , padding :: !Int -- must be [0,63], this is just how many null bytes we need to tack onto the end
+
+newtype Payload = Payload
+  { payload :: ByteArray
   }
 
 data Compression
@@ -75,33 +78,23 @@ data Compression
   | Lz4
 
 computePadding64 :: Int -> Int
-computePadding64 !n = (if n == 0 then 0 else 64 - mod n 64) :: Int
+computePadding64 !n = (if mod n 64 == 0 then 0 else 64 - mod n 64) :: Int
+
+computePadding8 :: Int -> Int
+computePadding8 !n = (if mod n 8 == 0 then 0 else 8 - mod n 8) :: Int
 
 -- We cons these backwards since the list gets reversed at the end.
-consPrimitive :: Int -> Int -> Int -> Int -> Int -> ByteArray -> ByteArray -> [BufferWithPayload] -> [BufferWithPayload]
-consPrimitive !pos !rawSize !rawMaskSize !elementPadding !maskPadding !exposed !exposedMask !acc =
-    BufferWithPayload
-      { buffer=Buffer{offset=fromIntegral (pos + rawMaskSize + maskPadding)
-      , length=fromIntegral @Int @Int64 rawSize},payload=exposed,padding=elementPadding
-      }
-  : BufferWithPayload
-      { buffer=Buffer{offset=fromIntegral pos,length=fromIntegral @Int @Int64 rawMaskSize}
-      , payload=exposedMask,padding=maskPadding
-      }
+consPrimitive :: ByteArray -> ByteArray -> [Payload] -> [Payload]
+consPrimitive !exposed !exposedMask !acc =
+    Payload { payload=exposed }
+  : Payload { payload=exposedMask }
   : acc
 
-consVariableBinary :: Int -> Int -> Int -> Int -> Int -> Int -> Int -> ByteArray -> ByteArray -> ByteArray -> [BufferWithPayload] -> [BufferWithPayload]
-consVariableBinary !pos !rawSize !rawMaskSize !rawOffsetsSize !elementPadding !maskPadding !offsetsPadding !exposed !exposedMask !exposedOffsets !acc =
-    BufferWithPayload
-      { buffer=Buffer
-        { offset=fromIntegral (pos + rawMaskSize + maskPadding + rawOffsetsSize + offsetsPadding)
-        , length=fromIntegral @Int @Int64 rawSize
-        }
-      , payload=exposed
-      , padding=elementPadding
-      }
-  : BufferWithPayload {buffer=Buffer{offset=fromIntegral (pos + rawMaskSize + maskPadding),length=fromIntegral @Int @Int64 rawOffsetsSize},payload=exposedOffsets,padding=offsetsPadding}
-  : BufferWithPayload {buffer=Buffer{offset=fromIntegral pos,length=fromIntegral @Int @Int64 rawMaskSize},payload=exposedMask,padding=maskPadding}
+consVariableBinary :: ByteArray -> ByteArray -> ByteArray -> [Payload] -> [Payload]
+consVariableBinary !exposed !exposedMask !exposedOffsets !acc =
+    Payload {payload=exposed }
+  : Payload {payload=exposedOffsets }
+  : Payload {payload=exposedMask }
   : acc
 
 -- | Encodes the schema and the header that comes before it.
@@ -127,19 +120,19 @@ encodePreludeAndSchema !schema =
 
 -- | Encode the footer and the epilogue.
 encodeFooterAndEpilogue :: Schema -> SmallArray Block -> Catenable.Builder
-encodeFooterAndEpilogue !schema !blocks = 
+encodeFooterAndEpilogue !schema !blocks =
   let encodedFooter = B.encode (encodeFooter (makeFooter blocks schema))
       encodedFooterLength = Catenable.length encodedFooter
    in continuation
       <>
       eos
       <>
-      encodedFooter 
+      encodedFooter
       <>
       Catenable.bytes (Bytes.fromByteArray (Bounded.run (Nat.constant @4) (Bounded.word32LE (fromIntegral encodedFooterLength)))) -- len 4
       <>
       asciiArrow1
- 
+
 continuation :: Catenable.Builder
 continuation = Catenable.bytes (Bytes.replicate 4 0xFF)
 
@@ -156,13 +149,104 @@ makeFooter !blocks !schema = Footer
   , recordBatches = blocks
   }
 
-encodeBuffersWithPayload :: SmallArray BufferWithPayload -> Catenable.Builder
-encodeBuffersWithPayload = foldMap
-  (\BufferWithPayload{payload,padding} ->
-    Catenable.bytes (Bytes.fromByteArray payload)
-    <> 
-    Catenable.bytes (Bytes.replicate padding 0x00)
-  )
+-- Concatenates all the payloads and computes the positions for
+-- the Arrow Buffers. The array of buffers has the same length
+-- as the array of payloads.
+encodePayloadsUncompressed ::
+     SmallArray Payload
+  -> ( Catenable.Builder
+     , SmallArray Buffer
+     )
+encodePayloadsUncompressed payloads =
+  let EncodePayloadState{builder=builderZ,buffers=buffersZ} = foldl'
+        (\EncodePayloadState{position,builder,buffers} Payload{payload} ->
+          let !unpaddedLen = PM.sizeofByteArray payload
+              !padding = computePadding64 unpaddedLen
+              builder' =
+                builder
+                <>
+                Catenable.bytes (Bytes.fromByteArray payload)
+                <>
+                Catenable.bytes (Bytes.replicate padding 0x00)
+              !paddedLen = padding + unpaddedLen
+              buffers' =
+                Buffer{offset=fromIntegral position, length=fromIntegral unpaddedLen} : buffers
+              position' = position + paddedLen
+           in EncodePayloadState
+                { position = position'
+                , builder = builder'
+                , buffers = buffers'
+                }
+        ) EncodePayloadState{builder=mempty,position=0,buffers=[]} payloads
+   in (builderZ,C.unsafeFromListReverseN (PM.sizeofSmallArray payloads) buffersZ)
+
+-- Note: Payloads under 64 bytes are never compressed. LZ4 frames have 15 bytes of
+-- overhead, so it is unlikely that the compression would be beneficial. An
+-- LZ4 frame cannot have compressed blocks whose uncompressed contents are
+-- larger than 4MiB, so we also disable compression on these large payloads.
+encodePayloadsLz4 ::
+     SmallArray Payload
+  -> ( Catenable.Builder
+     , SmallArray Buffer
+     )
+encodePayloadsLz4 payloads =
+  let EncodePayloadState{builder=builderZ,buffers=buffersZ} = foldl'
+        (\EncodePayloadState{position,builder,buffers} Payload{payload} ->
+          let payloadSize = PM.sizeofByteArray payload
+           in if payloadSize <= 64 || payloadSize >= 4194304
+                then
+                  -- We pad to 8-byte alignment rather than 64-byte alignment.
+                  -- Anyone working with compressed Arrow buffers should not expecting
+                  -- to be able to memory map the contents anyway.
+                  let padding = computePadding8 (PM.sizeofByteArray payload)
+                      builder' =
+                        builder
+                        <>
+                        Catenable.bytes (LittleEndian.int64 (-1))
+                        <>
+                        Catenable.bytes (Bytes.fromByteArray payload)
+                        <>
+                        Catenable.bytes (Bytes.replicate padding 0x00)
+                      unpaddedLen = 8 + PM.sizeofByteArray payload
+                      paddedLen = padding + unpaddedLen
+                      buffers' =
+                        Buffer{offset=fromIntegral position, length=fromIntegral unpaddedLen} : buffers
+                      position' = position + paddedLen
+                   in EncodePayloadState
+                        { position = position'
+                        , builder = builder'
+                        , buffers = buffers'
+                        }
+                else
+                  let compressed = Lz4.compressHighlyU 9 (Bytes.fromByteArray payload)
+                      padding = computePadding8 (PM.sizeofByteArray compressed)
+                      builder' =
+                        builder
+                        <>
+                        Catenable.bytes (LittleEndian.int64 (fromIntegral payloadSize))
+                        <>
+                        Catenable.bytes (Bytes.fromByteArray compressed)
+                        <>
+                        Catenable.bytes (Bytes.replicate padding 0x00)
+                      unpaddedLen = 8 + PM.sizeofByteArray compressed
+                      paddedLen = unpaddedLen + padding
+                      buffers' =
+                        Buffer{offset=fromIntegral position, length=fromIntegral unpaddedLen} : buffers
+                      position' = position + paddedLen
+                   in EncodePayloadState
+                        { position = position'
+                        , builder = builder'
+                        , buffers = buffers'
+                        }
+        ) EncodePayloadState{builder=mempty,position=0,buffers=[]} payloads
+   in (builderZ,C.unsafeFromListReverseN (PM.sizeofSmallArray payloads) buffersZ)
+
+data EncodePayloadState = EncodePayloadState
+  { builder :: !Catenable.Builder
+  , position :: !Int
+  , buffers :: ![Buffer]
+    -- ^ This is built in reverse order
+  }
 
 -- Argument: the encoded record batch;
 -- Output, the encoded record batch prefixed by

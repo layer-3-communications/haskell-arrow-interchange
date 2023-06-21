@@ -77,22 +77,18 @@ data NamedColumn n = NamedColumn
   , column :: !(Column n)
   }
 
-makeBuffers :: Arithmetic.Nat n -> SmallArray (NamedColumn n) -> [BufferWithPayload]
-makeBuffers !n !cols = go 0 [] 0
+makePayloads :: Arithmetic.Nat n -> SmallArray (NamedColumn n) -> [Payload]
+makePayloads !n !cols = go 0 []
   where
   -- 64 must divide pos evenly
-  go :: Int -> [BufferWithPayload] -> Int -> [BufferWithPayload]
-  go !ix !acc !pos = if ix < PM.sizeofSmallArray cols
+  go :: Int -> [Payload] -> [Payload]
+  go !ix !acc = if ix < PM.sizeofSmallArray cols
     then
       let NamedColumn{mask,column} = PM.indexSmallArray cols ix
           finishPrimitive !exposed = 
-            let rawSize = PM.sizeofByteArray exposed
-                exposedMask = Bool.expose mask
-                rawMaskSize = PM.sizeofByteArray exposedMask
-                elementPadding = computePadding64 rawSize
-                maskPadding = computePadding64 rawMaskSize
-                acc' = consPrimitive pos rawSize rawMaskSize elementPadding maskPadding exposed exposedMask acc
-             in go (ix + 1) acc' (pos + rawSize + elementPadding + rawMaskSize + maskPadding)
+            let exposedMask = Bool.expose mask
+                acc' = consPrimitive exposed exposedMask acc
+             in go (ix + 1) acc'
        in case column of
             PrimitiveWord8 v -> finishPrimitive (Word8.expose v)
             PrimitiveWord16 v -> finishPrimitive (Word16.expose v)
@@ -103,16 +99,10 @@ makeBuffers !n !cols = go 0 [] 0
             VariableBinaryUtf8 v ->
               let (offsets, totalPayloadSize) = makeVariableBinaryOffsets n v
                   exposed = unsafeConcatenate totalPayloadSize n v
-                  rawSize = PM.sizeofByteArray exposed
                   exposedOffsets = Word32.expose offsets
-                  rawOffsetsSize = PM.sizeofByteArray exposedOffsets
                   exposedMask = Bool.expose mask
-                  rawMaskSize = PM.sizeofByteArray exposedMask
-                  offsetsPadding = computePadding64 rawOffsetsSize
-                  elementPadding = computePadding64 rawSize
-                  maskPadding = computePadding64 rawMaskSize
-                  acc' = consVariableBinary pos rawSize rawMaskSize rawOffsetsSize elementPadding maskPadding offsetsPadding exposed exposedMask exposedOffsets acc
-               in go (ix + 1) acc' (pos + rawSize + elementPadding + rawMaskSize + maskPadding + rawOffsetsSize + offsetsPadding)
+                  acc' = consVariableBinary exposed exposedMask exposedOffsets acc
+               in go (ix + 1) acc'
     else List.reverse acc
 
 unsafeConcatenate :: Int -> Arithmetic.Nat n -> ShortText.Vector n -> ByteArray
@@ -185,10 +175,12 @@ encodeBatch ::
   -> SmallArray (NamedColumn n)
   -> (Catenable.Builder,Block)
 encodeBatch !n cmpr !namedColumns =
-  let body = encodeBuffersWithPayload buffersWithPayload
+  let payloads = Exts.fromList (makePayloads n namedColumns) :: SmallArray Payload
+      (body,buffers) = case cmpr of
+        None -> encodePayloadsUncompressed payloads
+        Lz4 -> encodePayloadsLz4 payloads
       bodyLength = Catenable.length body
-      buffersWithPayload = Exts.fromList (makeBuffers n namedColumns) :: SmallArray BufferWithPayload
-      recordBatch = makeRecordBatch n cmpr buffersWithPayload namedColumns
+      recordBatch = makeRecordBatch n cmpr buffers namedColumns
       encodedRecordBatch = B.encode $ encodeMessage $ Message
         { header=MessageHeaderRecordBatch recordBatch
         , bodyLength=fromIntegral bodyLength
@@ -226,10 +218,10 @@ naivePopCount !n !v = Fin.ascend' n 0 $ \(Fin ix lt) acc -> acc + (if Bool.index
 makeRecordBatch ::
      Arithmetic.Nat n
   -> Compression
-  -> SmallArray BufferWithPayload
+  -> SmallArray Buffer
   -> SmallArray (NamedColumn n)
   -> RecordBatch
-makeRecordBatch !n cmpr buffersWithPayload !cols = RecordBatch
+makeRecordBatch !n cmpr buffers !cols = RecordBatch
   { length = fromIntegral (Nat.demote n)
   , nodes = C.map'
       (\NamedColumn{mask} -> FieldNode
@@ -237,6 +229,6 @@ makeRecordBatch !n cmpr buffersWithPayload !cols = RecordBatch
         , nullCount=fromIntegral @Int @Int64 (Nat.demote n - naivePopCount n mask)
         }
       ) cols
-  , buffers = fmap (\x -> x.buffer) buffersWithPayload
+  , buffers = buffers
   , compression = marshallCompression cmpr
   }

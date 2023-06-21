@@ -13,6 +13,16 @@ source-repository-package
 
 source-repository-package
   type: git
+  location: https://github.com/byteverse/byteslice
+  tag: 4e8b4907e76824fdb79360ff55246747a44d0724
+
+source-repository-package
+  type: git
+  location: https://github.com/byteverse/lz4-bytes
+  tag: 76f6d7cfc8442e90ac9d386e841941fe722e2dd6
+
+source-repository-package
+  type: git
   location: https://github.com/andrewthad/vex
   tag: 42d6303a4ad13380aa2a7b37d301480713cd9da6
 
