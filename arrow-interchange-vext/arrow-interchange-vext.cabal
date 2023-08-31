@@ -1,0 +1,48 @@
+cabal-version:      3.4
+name:               arrow-interchange-vext
+version:            0.1.0.0
+-- synopsis:
+-- description:
+license:            BSD-3-Clause
+license-file:       LICENSE
+author:             Andrew Martin
+maintainer:         andrew.thaddeus@gmail.com
+-- copyright:
+category:           Data
+build-type:         Simple
+extra-doc-files:    CHANGELOG.md
+-- extra-source-files:
+
+library vext
+  ghc-options: -Wall -O2
+  exposed-modules:
+    ArrowBuilder
+  reexported-modules:
+    , ArrowBuilderNoColumn
+    , ArrowFile
+    , ArrowMessage
+    , ArrowSchema
+  build-depends:
+    , base >=4.16
+    , base >=4.16
+    , byteslice >=0.2.9
+    , flatbuffers-builder
+    , array-builder
+    , text >=2.0
+    , natural-arithmetic
+    , primitive >=0.8
+    , arrow-interchange-common
+    , text-short
+    , flatbuffers-builder
+    , text >=2.0
+    , byte-order >=0.1.3
+    , run-st >=0.1.1
+    , array-builder
+    , byteslice
+    , bytebuild >=0.3.12
+    , contiguous >=0.6
+    , bytestring >=0.11.4
+    , unlifted
+    , vext
+  hs-source-dirs: src
+  default-language: GHC2021

@@ -2,12 +2,15 @@
 {-# language LambdaCase #-}
 {-# language MagicHash #-}
 {-# language DuplicateRecordFields #-}
+{-# language PatternSynonyms #-}
 {-# language TypeApplications #-}
 {-# language TypeOperators #-}
 {-# language OverloadedRecordDot #-}
+{-# language PatternSynonyms #-}
 
 module ArrowBuilder
   ( Column(..)
+  , VariableBinary(..)
   , NamedColumn(..)
   , Compression(..)
   , encode
@@ -28,11 +31,16 @@ import Data.Int
 
 import ArrowBuilderNoColumn
 
+import GHC.Exts (Int32#,Int64#)
 import Control.Monad.ST (runST)
+import Data.Bytes.Types (ByteArrayN(ByteArrayN))
 import Data.Primitive (SmallArray,ByteArray(ByteArray))
 import Data.Text (Text)
+import Data.Unlifted (PrimArray#(PrimArray#))
 import Arithmetic.Types (Fin(Fin))
 import GHC.TypeNats (type (+))
+import Data.Unlifted (Bool#, pattern True#, pattern False#)
+import Arithmetic.Types (Fin32#)
 
 import qualified Arithmetic.Fin as Fin
 import qualified Arithmetic.Types as Arithmetic
@@ -42,104 +50,90 @@ import qualified Arithmetic.Lte as Lte
 import qualified Data.List as List
 import qualified Data.Primitive.Contiguous as C
 import qualified Data.Primitive as PM
+import qualified Data.Text as T
 import qualified GHC.Exts as Exts
 import qualified Data.Bytes.Builder.Bounded as Bounded
 import qualified Data.Bytes as Bytes
 import qualified Data.Bytes.Chunks as Chunks
 import qualified Flatbuffers.Builder as B
 import qualified Data.Builder.Catenable.Bytes as Catenable
-import qualified Vector.Word8.Internal as Word8
-import qualified Vector.Word16.Internal as Word16
-import qualified Vector.Word32.Internal as Word32
-import qualified Vector.Word64.Internal as Word64
-import qualified Vector.Word128.Internal as Word128
-import qualified Vector.Word256.Internal as Word256
-import qualified Vector.Int64.Internal as Int64
-import qualified Vector.Bool.Internal as Bool
-import qualified Vector.ShortText.Internal as ShortText
+import qualified Vector.Int32 as Int32
+import qualified Vector.Int64 as Int64
+import qualified Vector.Bit as Bit
 import qualified Data.ByteString.Short as SBS
 import qualified Data.ByteString.Short.Internal as SBS
 import qualified Data.Text.Short as TS
+import qualified GHC.TypeNats as GHC
 
 data Column n
-  = PrimitiveWord8 !(Word8.Vector n)
-  | PrimitiveWord16 !(Word16.Vector n)
-  | PrimitiveWord32 !(Word32.Vector n)
-  | PrimitiveWord64 !(Word64.Vector n)
-  | PrimitiveWord128 !(Word128.Vector n)
-  | PrimitiveWord256 !(Word256.Vector n)
-  | PrimitiveInt64 !(Int64.Vector n)
-  | VariableBinaryUtf8 !(ShortText.Vector n)
+  = PrimitiveInt32
+      !(Int32.Vector n Int32#)
+  | PrimitiveInt64
+      !(Int64.Vector n Int64#)
+  | VariableBinaryUtf8 !(VariableBinary n)
+  | TimestampUtcMillisecond
+      !(Int64.Vector n Int64#)
+  | DurationMillisecond
+      !(Int64.Vector n Int64#)
+
+data VariableBinary (n :: GHC.Nat) = forall (m :: GHC.Nat). VariableBinary
+  !(ByteArrayN m)
+  -- Invariant unenforced by type system: these finite numbers must
+  -- be in nondescending order. The first element should be zero, and the
+  -- last element should be m.
+  !(Int32.Vector (n + 1) (Fin32# (m + 1)))
+
 
 data NamedColumn n = NamedColumn
   { name :: !Text
-  , mask :: !(Bool.Vector n)
+  , mask :: !(Bit.Vector n Bool#)
   , column :: !(Column n)
   }
 
 makePayloads :: Arithmetic.Nat n -> SmallArray (NamedColumn n) -> [Payload]
 makePayloads !n !cols = go 0 []
   where
-  -- 64 must divide pos evenly
   go :: Int -> [Payload] -> [Payload]
   go !ix !acc = if ix < PM.sizeofSmallArray cols
     then
       let NamedColumn{mask,column} = PM.indexSmallArray cols ix
-          finishPrimitive !exposed = 
-            let exposedMask = Bool.expose mask
-                acc' = consPrimitive exposed exposedMask acc
-             in go (ix + 1) acc'
-       in case column of
-            PrimitiveWord8 v -> finishPrimitive (Word8.expose v)
-            PrimitiveWord16 v -> finishPrimitive (Word16.expose v)
-            PrimitiveWord32 v -> finishPrimitive (Word32.expose v)
-            PrimitiveWord64 v -> finishPrimitive (Word64.expose v)
-            PrimitiveWord256 v -> finishPrimitive (Word256.expose v)
-            PrimitiveInt64 v -> finishPrimitive (Int64.expose v)
-            VariableBinaryUtf8 v ->
-              let (offsets, totalPayloadSize) = makeVariableBinaryOffsets n v
-                  exposed = unsafeConcatenate totalPayloadSize n v
-                  exposedOffsets = Word32.expose offsets
-                  exposedMask = Bool.expose mask
-                  acc' = consVariableBinary exposed exposedMask exposedOffsets acc
+          finishPrimitive !exposed = case Bit.expose mask of
+            PrimArray# b -> 
+              let exposedMask = ByteArray b
+                  acc' = consPrimitive exposed exposedMask acc
                in go (ix + 1) acc'
+       in case column of
+            VariableBinaryUtf8 (VariableBinary (ByteArrayN b) szs) ->
+              let !acc' = consVariableBinary b
+                    (ByteArray (case Bit.expose mask of PrimArray# x -> x))
+                    (ByteArray (case Int32.expose szs of PrimArray# x -> x))
+                    acc
+               in go (ix + 1) acc'
+            PrimitiveInt32 v -> case Int32.expose v of
+              PrimArray# b ->
+                let b' = ByteArray b
+                 in finishPrimitive b'
+            PrimitiveInt64 v -> case Int64.expose v of
+              PrimArray# b ->
+                let b' = ByteArray b
+                 in finishPrimitive b'
+            TimestampUtcMillisecond v -> case Int64.expose v of
+              PrimArray# b ->
+                let b' = ByteArray b
+                 in finishPrimitive b'
+            DurationMillisecond v -> case Int64.expose v of
+              PrimArray# b ->
+                let b' = ByteArray b
+                 in finishPrimitive b'
     else List.reverse acc
-
-unsafeConcatenate :: Int -> Arithmetic.Nat n -> ShortText.Vector n -> ByteArray
-unsafeConcatenate !sz !n !v = runST $ do
-  dst <- PM.newByteArray sz
-  total <- Fin.ascendM n (0 :: Int) $ \(Fin ix lt) !offset -> do
-    let val = ShortText.index lt v ix
-    case TS.toShortByteString val of
-      SBS.SBS b -> do
-        let len = PM.sizeofByteArray (ByteArray b)
-        PM.copyByteArray dst offset (ByteArray b) 0 len
-        pure (offset + len)
-  if total == sz
-    then PM.unsafeFreezeByteArray dst
-    else errorWithoutStackTrace "arrow-interchange:ArrowBuilder.unsafeConcatenate"
-
--- Returns the offsets vector and the total size of the concatenated strings
-makeVariableBinaryOffsets :: forall n. Arithmetic.Nat n -> ShortText.Vector n -> (Word32.Vector (n + 1), Int)
-makeVariableBinaryOffsets !n !src = runST $ do
-  dst <- Word32.uninitialized (Nat.succ n)
-  total <- Fin.ascendM n (0 :: Int) $ \(Fin ix lt) !offset -> do
-    let val = ShortText.index lt src ix
-    Word32.write (Lt.weakenR @1 lt) dst ix (fromIntegral offset :: Word32)
-    pure (offset + SBS.length (TS.toShortByteString val))
-  Word32.write (Lt.incrementL @n Lt.zero) dst n (fromIntegral total :: Word32)
-  dst' <- Word32.unsafeFreeze dst
-  pure (dst',total)
 
 columnToType :: Column n -> Type
 columnToType = \case
-  PrimitiveWord8{} -> Int TableInt{bitWidth=8,isSigned=False}
-  PrimitiveWord16{} -> Int TableInt{bitWidth=16,isSigned=False}
-  PrimitiveWord32{} -> Int TableInt{bitWidth=32,isSigned=False}
-  PrimitiveWord64{} -> Int TableInt{bitWidth=64,isSigned=False}
-  PrimitiveWord128{} -> FixedSizeBinary TableFixedSizeBinary{byteWidth=16}
-  PrimitiveWord256{} -> FixedSizeBinary TableFixedSizeBinary{byteWidth=32}
+  PrimitiveInt32{} -> Int TableInt{bitWidth=32,isSigned=True}
   PrimitiveInt64{} -> Int TableInt{bitWidth=64,isSigned=True}
+  TimestampUtcMillisecond{} ->
+    Timestamp TableTimestamp{unit=Millisecond,timezone=T.pack "UTC"}
+  DurationMillisecond{} -> Duration Millisecond
   VariableBinaryUtf8{} -> Utf8
 
 namedColumnToField :: NamedColumn n -> Field
@@ -187,7 +181,7 @@ encodeBatch !n cmpr !namedColumns =
         }
       partB = encodePartB encodedRecordBatch
       block = Block
-        { offset = 0
+        { offset = 0 -- Offset is bogus. This is replaced by the true offset in encode.
         , metaDataLength = fromIntegral @Int @Int32 (Catenable.length partB)
         , bodyLength = fromIntegral @Int @Int64 bodyLength
         }
@@ -212,8 +206,11 @@ encode !n cmpr !namedColumns =
   schema = makeSchema namedColumns
 
 -- TODO: Replace this. It is slow and awful.
-naivePopCount :: Arithmetic.Nat n -> Bool.Vector n -> Int
-naivePopCount !n !v = Fin.ascend' n 0 $ \(Fin ix lt) acc -> acc + (if Bool.index lt v ix then 1 else 0)
+naivePopCount :: Arithmetic.Nat n -> Bit.Vector n Bool# -> Int
+naivePopCount !n !v = Fin.ascend' n 0 $ \fin acc ->
+  acc + case Bit.index v (Fin.unlift fin) of
+    True# -> 1
+    _ -> 0
 
 makeRecordBatch ::
      Arithmetic.Nat n
@@ -232,3 +229,4 @@ makeRecordBatch !n cmpr buffers !cols = RecordBatch
   , buffers = buffers
   , compression = marshallCompression cmpr
   }
+

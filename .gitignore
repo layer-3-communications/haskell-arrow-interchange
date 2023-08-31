@@ -32,3 +32,4 @@ bin/
 output.arrow
 golden/binout/
 golden/jsonout/
+binary-analysis/

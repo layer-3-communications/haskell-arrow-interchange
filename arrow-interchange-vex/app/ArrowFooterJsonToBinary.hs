@@ -17,6 +17,8 @@ import qualified System.IO as IO
 
 $(deriveFromJSON defaultOptions ''Buffer)
 $(deriveFromJSON defaultOptions ''TableInt)
+$(deriveFromJSON defaultOptions ''TimeUnit)
+$(deriveFromJSON defaultOptions ''TableTimestamp)
 $(deriveFromJSON defaultOptions ''TableFixedSizeBinary)
 $(deriveFromJSON defaultOptions ''Type)
 $(deriveFromJSON defaultOptions ''Field)

@@ -1,0 +1,24 @@
+{
+  version: "V5",
+  header_type: "RecordBatch",
+  header: {
+    length: 1024,
+    nodes: [
+      {
+        length: 1024,
+        null_count: 667
+      }
+    ],
+    buffers: [
+      {
+        offset: 0,
+        length: 16
+      },
+      {
+        offset: 64,
+        length: 4096
+      }
+    ]
+  },
+  bodyLength: 4160
+}

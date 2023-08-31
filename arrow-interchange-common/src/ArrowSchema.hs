@@ -1,5 +1,6 @@
 {-# language DuplicateRecordFields #-}
 {-# language LambdaCase #-}
+{-# language PatternSynonyms #-}
 
 module ArrowSchema
   ( Field(..)
@@ -7,8 +8,15 @@ module ArrowSchema
   , Schema(..)
   , TableInt(..)
   , TableFixedSizeBinary(..)
+  , TableTimestamp(..)
   , Buffer(..)
+  , TimeUnit(..)
   , encodeSchema
+    -- * Time Units
+  , pattern Second
+  , pattern Millisecond
+  , pattern Microsecond
+  , pattern Nanosecond
   ) where
 
 import Data.Word (Word16)
@@ -19,6 +27,20 @@ import Data.Int
 
 import qualified Flatbuffers.Builder as B
 import qualified GHC.Exts as Exts
+
+newtype TimeUnit = TimeUnit Word16
+
+pattern Second :: TimeUnit
+pattern Second = TimeUnit 0
+
+pattern Millisecond :: TimeUnit
+pattern Millisecond = TimeUnit 1
+
+pattern Microsecond :: TimeUnit
+pattern Microsecond = TimeUnit 2
+
+pattern Nanosecond :: TimeUnit
+pattern Nanosecond = TimeUnit 3
 
 -- | Corresponding schema at @schema/arrow-schema.fbs@:
 data Schema = Schema
@@ -43,9 +65,11 @@ data Field = Field
 data Type
   = Null
   | Int TableInt
-  | FixedSizeBinary TableFixedSizeBinary
+  | FixedSizeBinary !TableFixedSizeBinary
   | Utf8
   | Bool
+  | Timestamp !TableTimestamp
+  | Duration !TimeUnit
 
 newtype TableFixedSizeBinary = TableFixedSizeBinary
   { byteWidth :: Int32
@@ -54,6 +78,11 @@ newtype TableFixedSizeBinary = TableFixedSizeBinary
 data TableInt = TableInt
   { bitWidth :: !Int32
   , isSigned :: !Bool
+  }
+
+data TableTimestamp = TableTimestamp
+  { unit :: !TimeUnit
+  , timezone :: !Text
   }
 
 encodeSchema :: Schema -> B.Object
@@ -77,6 +106,13 @@ encodeTableInt TableInt{bitWidth,isSigned} = B.Object $ Exts.fromList
   , B.boolean isSigned
   ]
 
+encodeTableTimestamp :: TableTimestamp -> B.Object
+encodeTableTimestamp TableTimestamp{unit=TimeUnit w,timezone} =
+  B.Object $ Exts.fromList
+    [ B.unsigned16 w
+    , B.text timezone
+    ]
+
 encodeTableBinary :: TableFixedSizeBinary -> B.Object
 encodeTableBinary TableFixedSizeBinary{byteWidth} = B.Object $ Exts.fromList
   [ B.signed32 byteWidth
@@ -89,3 +125,5 @@ encodeType = \case
   Utf8 -> B.Union{tag=5,object=B.Object mempty}
   Bool -> B.Union{tag=6,object=B.Object mempty}
   FixedSizeBinary table -> B.Union{tag=15,object=encodeTableBinary table}
+  Timestamp table -> B.Union{tag=10,object=encodeTableTimestamp table}
+  Duration (TimeUnit w) -> B.Union{tag=18,object=B.Object $ Exts.fromList [B.unsigned16 w]}

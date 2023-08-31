@@ -55,15 +55,6 @@ import qualified Data.Bytes as Bytes
 import qualified Data.Bytes.Chunks as Chunks
 import qualified Flatbuffers.Builder as B
 import qualified Data.Builder.Catenable.Bytes as Catenable
-import qualified Vector.Word8.Internal as Word8
-import qualified Vector.Word16.Internal as Word16
-import qualified Vector.Word32.Internal as Word32
-import qualified Vector.Word64.Internal as Word64
-import qualified Vector.Word128.Internal as Word128
-import qualified Vector.Word256.Internal as Word256
-import qualified Vector.Int64.Internal as Int64
-import qualified Vector.Bool.Internal as Bool
-import qualified Vector.ShortText.Internal as ShortText
 import qualified Data.ByteString.Short as SBS
 import qualified Data.ByteString.Short.Internal as SBS
 import qualified Data.Text.Short as TS

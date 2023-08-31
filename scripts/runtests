@@ -22,7 +22,7 @@ if hash diff; then
   echo "Found diff in PATH" >&2
   which diff >&2
 else
-  echo "Could not find flatc in PATH. Exiting." >&2
+  echo "Could not find diff in PATH. Exiting." >&2
   exit 1
 fi
 
