@@ -1,17 +1,12 @@
 cabal-version:      3.4
 name:               arrow-interchange-vext
 version:            0.1.0.0
--- synopsis:
--- description:
 license:            BSD-3-Clause
 license-file:       LICENSE
 author:             Andrew Martin
 maintainer:         andrew.thaddeus@gmail.com
--- copyright:
 category:           Data
 build-type:         Simple
-extra-doc-files:    CHANGELOG.md
--- extra-source-files:
 
 library vext
   ghc-options: -Wall -O2
