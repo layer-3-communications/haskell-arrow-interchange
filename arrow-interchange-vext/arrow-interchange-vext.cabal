@@ -8,7 +8,7 @@ maintainer:         andrew.thaddeus@gmail.com
 category:           Data
 build-type:         Simple
 
-library vext
+library
   ghc-options: -Wall -O2
   exposed-modules:
     ArrowBuilder
