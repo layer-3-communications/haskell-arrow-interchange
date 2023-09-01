@@ -163,7 +163,7 @@ namedColumnToField NamedColumn{name,column} = Field
   { name = name
   , nullable = True
   , type_ = columnToType column
-  , dictionary = ()
+  , dictionary = Nothing
   , children = mempty
   }
 

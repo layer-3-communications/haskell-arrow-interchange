@@ -33,3 +33,5 @@ output.arrow
 golden/binout/
 golden/jsonout/
 binary-analysis/
+original.arrow
+output.hex.txt

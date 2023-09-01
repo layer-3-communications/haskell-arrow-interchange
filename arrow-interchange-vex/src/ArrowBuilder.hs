@@ -76,6 +76,7 @@ data Column n
   | PrimitiveWord128 !(Word128.Vector n)
   | PrimitiveWord256 !(Word256.Vector n)
   | PrimitiveInt64 !(Int64.Vector n)
+  | Date64 !(Int64.Vector n)
   | VariableBinaryUtf8 !(ShortText.Vector n)
   | ListVariableBinaryUtf8 !(ShortTexts.Vector n)
   | NoColumn -- We use this when encoding structs. It has no payload.
@@ -121,6 +122,7 @@ makePayloadsBackwardsOnto !n !cols !acc0 = C.foldl'
             PrimitiveWord128 v -> finishPrimitive (Bool.expose mask) (Word128.expose v)
             PrimitiveWord256 v -> finishPrimitive (Bool.expose mask) (Word256.expose v)
             PrimitiveInt64 v -> finishPrimitive (Bool.expose mask) (Int64.expose v)
+            Date64 v -> finishPrimitive (Bool.expose mask) (Int64.expose v)
             VariableBinaryUtf8 v ->
               let (offsets, totalPayloadSize) = makeVariableBinaryOffsets n v
                   exposed = unsafeConcatenate totalPayloadSize n v
@@ -214,6 +216,7 @@ columnToType = \case
   PrimitiveWord128{} -> FixedSizeBinary TableFixedSizeBinary{byteWidth=16}
   PrimitiveWord256{} -> FixedSizeBinary TableFixedSizeBinary{byteWidth=32}
   PrimitiveInt64{} -> Int TableInt{bitWidth=64,isSigned=True}
+  Date64{} -> Date (TableDate DateMillisecond)
   VariableBinaryUtf8{} -> Utf8
   ListVariableBinaryUtf8{} -> List
 
@@ -223,20 +226,20 @@ namedColumnToField NamedColumn{name,contents} = case contents of
     { name = name
     , nullable = False
     , type_ = Struct
-    , dictionary = ()
+    , dictionary = Nothing
     , children = C.map' namedColumnToField children
     }
   Values MaskedColumn{column} -> Field
     { name = name
     , nullable = True
     , type_ = columnToType column
-    , dictionary = ()
+    , dictionary = Nothing
     , children = case column of
         ListVariableBinaryUtf8{} -> pure Field
           { name = T.empty
           , nullable = False
           , type_ = Utf8
-          , dictionary = ()
+          , dictionary = Nothing
           , children = mempty
           }
         _ -> mempty

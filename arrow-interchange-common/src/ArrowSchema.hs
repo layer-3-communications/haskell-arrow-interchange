@@ -13,6 +13,7 @@ module ArrowSchema
   , Buffer(..)
   , TimeUnit(..)
   , DateUnit(..)
+  , DictionaryEncoding(..)
   , encodeSchema
     -- * Time Units
   , pattern Second
@@ -67,11 +68,19 @@ data Buffer = Buffer
   , length :: !Int64
   }
 
+-- Note, the dictionaryKind field is omitted since it only has a single
+-- inhabitant.
+data DictionaryEncoding = DictionaryEncoding
+  { id :: !Int64
+  , indexType :: !TableInt
+  , isOrdered :: !Bool
+  }
+
 data Field = Field
   { name :: !Text
   , nullable :: !Bool
   , type_ :: Type
-  , dictionary :: () -- omitting this for now. add it later
+  , dictionary :: !(Maybe DictionaryEncoding)
   , children :: !(SmallArray Field)
   }
 
@@ -112,12 +121,20 @@ encodeSchema Schema{endianness,fields} = B.Object $ Exts.fromList
   ]
 
 encodeField :: Field -> B.Object
-encodeField Field{name,nullable,type_,children} = B.Object $ Exts.fromList
+encodeField Field{name,nullable,type_,dictionary,children} = B.Object $ Exts.fromList
   [ B.text name
   , B.boolean nullable
   , B.union (encodeType type_)
-  , B.absent
+  , case dictionary of {Nothing -> B.absent; Just d -> B.FieldObject (encodeDictionaryEncoding d)}
   , B.objects (fmap encodeField children)
+  ]
+
+encodeDictionaryEncoding :: DictionaryEncoding -> B.Object
+encodeDictionaryEncoding DictionaryEncoding{id,indexType,isOrdered} = B.Object $ Exts.fromList
+  [ B.signed64 id
+  , B.FieldObject (encodeTableInt indexType)
+  , B.boolean isOrdered
+  , B.unsigned16 0 -- the dictionary kind: DenseArray
   ]
 
 encodeTableInt :: TableInt -> B.Object
