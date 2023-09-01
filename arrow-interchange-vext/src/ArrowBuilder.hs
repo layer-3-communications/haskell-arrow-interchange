@@ -75,6 +75,10 @@ data Column n
       !(Int64.Vector n Int64#)
   | DurationMillisecond
       !(Int64.Vector n Int64#)
+  | Date32
+      !(Int32.Vector n Int32#)
+  | Date64
+      !(Int64.Vector n Int64#)
 
 data VariableBinary (n :: GHC.Nat) = forall (m :: GHC.Nat). VariableBinary
   !(ByteArrayN m)
@@ -125,6 +129,14 @@ makePayloads !n !cols = go 0 []
               PrimArray# b ->
                 let b' = ByteArray b
                  in finishPrimitive b'
+            Date32 v -> case Int32.expose v of
+              PrimArray# b ->
+                let b' = ByteArray b
+                 in finishPrimitive b'
+            Date64 v -> case Int64.expose v of
+              PrimArray# b ->
+                let b' = ByteArray b
+                 in finishPrimitive b'
     else List.reverse acc
 
 columnToType :: Column n -> Type
@@ -134,6 +146,8 @@ columnToType = \case
   TimestampUtcMillisecond{} ->
     Timestamp TableTimestamp{unit=Millisecond,timezone=T.pack "UTC"}
   DurationMillisecond{} -> Duration Millisecond
+  Date32{} -> Date (TableDate Day)
+  Date64{} -> Date (TableDate DateMillisecond)
   VariableBinaryUtf8{} -> Utf8
 
 namedColumnToField :: NamedColumn n -> Field

@@ -9,14 +9,19 @@ module ArrowSchema
   , TableInt(..)
   , TableFixedSizeBinary(..)
   , TableTimestamp(..)
+  , TableDate(..)
   , Buffer(..)
   , TimeUnit(..)
+  , DateUnit(..)
   , encodeSchema
     -- * Time Units
   , pattern Second
   , pattern Millisecond
   , pattern Microsecond
   , pattern Nanosecond
+    -- * Time Units
+  , pattern Day
+  , pattern DateMillisecond
   ) where
 
 import Data.Word (Word16)
@@ -41,6 +46,14 @@ pattern Microsecond = TimeUnit 2
 
 pattern Nanosecond :: TimeUnit
 pattern Nanosecond = TimeUnit 3
+
+newtype DateUnit = DateUnit Word16
+
+pattern Day :: DateUnit
+pattern Day = DateUnit 0
+
+pattern DateMillisecond :: DateUnit
+pattern DateMillisecond = DateUnit 1
 
 -- | Corresponding schema at @schema/arrow-schema.fbs@:
 data Schema = Schema
@@ -69,6 +82,7 @@ data Type
   | Utf8
   | Bool
   | Timestamp !TableTimestamp
+  | Date !TableDate
   | Duration !TimeUnit
 
 newtype TableFixedSizeBinary = TableFixedSizeBinary
@@ -83,6 +97,10 @@ data TableInt = TableInt
 data TableTimestamp = TableTimestamp
   { unit :: !TimeUnit
   , timezone :: !Text
+  }
+
+data TableDate = TableDate
+  { unit :: !DateUnit
   }
 
 encodeSchema :: Schema -> B.Object
@@ -113,6 +131,12 @@ encodeTableTimestamp TableTimestamp{unit=TimeUnit w,timezone} =
     , B.text timezone
     ]
 
+encodeTableDate :: TableDate -> B.Object
+encodeTableDate TableDate{unit=DateUnit w} =
+  B.Object $ Exts.fromList
+    [ B.unsigned16 w
+    ]
+
 encodeTableBinary :: TableFixedSizeBinary -> B.Object
 encodeTableBinary TableFixedSizeBinary{byteWidth} = B.Object $ Exts.fromList
   [ B.signed32 byteWidth
@@ -125,5 +149,6 @@ encodeType = \case
   Utf8 -> B.Union{tag=5,object=B.Object mempty}
   Bool -> B.Union{tag=6,object=B.Object mempty}
   FixedSizeBinary table -> B.Union{tag=15,object=encodeTableBinary table}
+  Date table -> B.Union{tag=8,object=encodeTableDate table}
   Timestamp table -> B.Union{tag=10,object=encodeTableTimestamp table}
   Duration (TimeUnit w) -> B.Union{tag=18,object=B.Object $ Exts.fromList [B.unsigned16 w]}
