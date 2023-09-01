@@ -31,7 +31,7 @@ import Data.Int
 
 import ArrowBuilderNoColumn
 
-import GHC.Exts (Int32#,Int64#)
+import GHC.Exts (Int32#,Int64#,Word32#)
 import Control.Monad.ST (runST)
 import Data.Bytes.Types (ByteArrayN(ByteArrayN))
 import Data.Primitive (SmallArray,ByteArray(ByteArray))
@@ -43,31 +43,34 @@ import Data.Unlifted (Bool#, pattern True#, pattern False#)
 import Arithmetic.Types (Fin32#)
 
 import qualified Arithmetic.Fin as Fin
-import qualified Arithmetic.Types as Arithmetic
-import qualified Arithmetic.Nat as Nat
 import qualified Arithmetic.Lt as Lt
 import qualified Arithmetic.Lte as Lte
-import qualified Data.List as List
-import qualified Data.Primitive.Contiguous as C
-import qualified Data.Primitive as PM
-import qualified Data.Text as T
-import qualified GHC.Exts as Exts
-import qualified Data.Bytes.Builder.Bounded as Bounded
-import qualified Data.Bytes as Bytes
-import qualified Data.Bytes.Chunks as Chunks
-import qualified Flatbuffers.Builder as B
+import qualified Arithmetic.Nat as Nat
+import qualified Arithmetic.Types as Arithmetic
 import qualified Data.Builder.Catenable.Bytes as Catenable
-import qualified Vector.Int32 as Int32
-import qualified Vector.Int64 as Int64
-import qualified Vector.Bit as Bit
 import qualified Data.ByteString.Short as SBS
 import qualified Data.ByteString.Short.Internal as SBS
+import qualified Data.Bytes as Bytes
+import qualified Data.Bytes.Builder.Bounded as Bounded
+import qualified Data.Bytes.Chunks as Chunks
+import qualified Data.List as List
+import qualified Data.Primitive as PM
+import qualified Data.Primitive.Contiguous as C
+import qualified Data.Text as T
 import qualified Data.Text.Short as TS
+import qualified Flatbuffers.Builder as B
+import qualified GHC.Exts as Exts
 import qualified GHC.TypeNats as GHC
+import qualified Vector.Bit as Bit
+import qualified Vector.Int32 as Int32
+import qualified Vector.Int64 as Int64
+import qualified Vector.Word32 as Word32
 
 data Column n
   = PrimitiveInt32
       !(Int32.Vector n Int32#)
+  | PrimitiveWord32
+      !(Word32.Vector n Word32#)
   | PrimitiveInt64
       !(Int64.Vector n Int64#)
   | VariableBinaryUtf8 !(VariableBinary n)
@@ -117,6 +120,10 @@ makePayloads !n !cols = go 0 []
               PrimArray# b ->
                 let b' = ByteArray b
                  in finishPrimitive b'
+            PrimitiveWord32 v -> case Word32.expose v of
+              PrimArray# b ->
+                let b' = ByteArray b
+                 in finishPrimitive b'
             PrimitiveInt64 v -> case Int64.expose v of
               PrimArray# b ->
                 let b' = ByteArray b
@@ -142,6 +149,7 @@ makePayloads !n !cols = go 0 []
 columnToType :: Column n -> Type
 columnToType = \case
   PrimitiveInt32{} -> Int TableInt{bitWidth=32,isSigned=True}
+  PrimitiveWord32{} -> Int TableInt{bitWidth=32,isSigned=False}
   PrimitiveInt64{} -> Int TableInt{bitWidth=64,isSigned=True}
   TimestampUtcMillisecond{} ->
     Timestamp TableTimestamp{unit=Millisecond,timezone=T.pack "UTC"}
