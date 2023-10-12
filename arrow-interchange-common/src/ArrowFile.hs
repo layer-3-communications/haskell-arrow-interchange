@@ -5,21 +5,29 @@ module ArrowFile
   ( Footer(..)
   , Block(..)
   , encodeFooter
+  , decodeFooter
   ) where
 
 import Prelude hiding (length)
 
-import ArrowSchema (Schema,Buffer(Buffer))
-import ArrowSchema (encodeSchema)
+import ArrowSchema (Schema)
+import ArrowSchema (encodeSchema,decodeSchemaInternal)
 import Data.Primitive (SmallArray,ByteArray)
 import Control.Monad.ST.Run (runByteArrayST)
 import Data.Int
+import Data.Maybe (maybe)
+import Data.Bytes (Bytes)
 
 import qualified Flatbuffers.Builder as B
 import qualified Data.Primitive as PM
 import qualified GHC.Exts as Exts
 import qualified Data.Primitive.ByteArray.LittleEndian as LE
 import qualified ArrowSchema
+import qualified FlatBuffers as FB
+import qualified FlatBuffers.Vector as FBV
+import qualified Data.Bytes as Bytes
+import qualified ArrowTemplateHaskell as G
+import qualified Data.ByteString.Lazy as LBS
 
 -- The @version@ field is implied.
 data Footer = Footer
@@ -27,6 +35,39 @@ data Footer = Footer
   , dictionaries :: !(SmallArray Block)
   , recordBatches :: !(SmallArray Block)
   }
+
+decodeFooter :: Bytes -> Either String Footer
+decodeFooter !b = do
+  theSchema <- FB.decode (LBS.fromStrict (Bytes.toByteString b))
+  decodeFooterInternal theSchema
+
+decodeFooterInternal :: FB.Table G.Footer -> Either String Footer
+decodeFooterInternal x = do
+  theSchema <- G.footerSchema x
+    >>= maybe (Left "Expected schema in footer") Right
+    >>= decodeSchemaInternal
+  dicts <- G.footerDictionaries x >>= \case
+    Nothing -> pure mempty
+    Just ys -> do
+      zs <- FBV.toList ys >>= traverse decodeBlock
+      pure (Exts.fromList zs)
+  recs <- G.footerRecordBatches x >>= \case
+    Nothing -> pure mempty
+    Just ys -> do
+      zs <- FBV.toList ys >>= traverse decodeBlock
+      pure (Exts.fromList zs)
+  pure Footer
+    { schema = theSchema
+    , dictionaries = dicts
+    , recordBatches = recs
+    }
+
+decodeBlock :: FB.Struct G.Block -> Either String Block
+decodeBlock x = do
+  offset <- G.blockOffset x
+  metaDataLength <- G.blockMetaDataLength x
+  bodyLength <- G.blockBodyLength x
+  pure Block{offset,metaDataLength,bodyLength}
 
 -- This is a flatbuffers struct
 data Block = Block

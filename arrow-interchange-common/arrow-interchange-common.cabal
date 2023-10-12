@@ -15,6 +15,7 @@ library
     ArrowFile
     ArrowMessage
     ArrowSchema
+    ArrowTemplateHaskell
   build-depends:
     , array-builder >=0.1.3
     , base >=4.16
@@ -24,6 +25,7 @@ library
     , byteslice >=0.2.9
     , bytestring >=0.11.4
     , contiguous >=0.6
+    , flatbuffers >=0.3
     , flatbuffers-builder
     , lz4-bytes >=0.1.0.2
     , natural-arithmetic

@@ -1,4 +1,5 @@
 {-# language DataKinds #-}
+{-# language GADTs #-}
 {-# language LambdaCase #-}
 {-# language MagicHash #-}
 {-# language DuplicateRecordFields #-}
@@ -16,8 +17,10 @@ module ArrowBuilder
   , encode
     -- * Schema
   , makeSchema
+  , descriptionsToSchema
     -- * Streaming
   , encodeBatch
+  , encodeVectorBatch
   , encodePreludeAndSchema
   , encodeFooterAndEpilogue
   ) where
@@ -48,6 +51,7 @@ import qualified Arithmetic.Lte as Lte
 import qualified Arithmetic.Nat as Nat
 import qualified Arithmetic.Types as Arithmetic
 import qualified Data.Builder.Catenable.Bytes as Catenable
+import qualified Data.Kind
 import qualified Data.ByteString.Short as SBS
 import qualified Data.ByteString.Short.Internal as SBS
 import qualified Data.Bytes as Bytes
@@ -65,6 +69,59 @@ import qualified Vector.Bit as Bit
 import qualified Vector.Int32 as Int32
 import qualified Vector.Int64 as Int64
 import qualified Vector.Word32 as Word32
+
+data Serialization = Encode | Decode
+
+data LogicalType
+  = LogicalDate32
+  | LogicalDate64
+  | LogicalPrimitiveUnsigned32
+  | LogicalPrimitiveSigned32
+  | LogicalPrimitiveSigned64
+  | LogicalDurationMilliseconds
+  | LogicalTimestampUtcMilliseconds
+  | LogicalBinary
+  | LogicalUtf8
+
+data LogicalTypeI32
+  = LogicalTypeI32Date
+  | LogicalTypeI32Primitive
+
+data LogicalTypeI64
+  = LogicalTypeI64Date
+  | LogicalTypeI64DurationMilliseconds
+  | LogicalTypeI64Primitive
+  | LogicalTypeI64TimestampUtcMilliseconds
+
+data LogicalTypeVariableBinary
+  = LogicalTypeVariableBinaryString
+  | LogicalTypeVariableBinaryBinary
+
+data Description = Description
+  { name :: !Text
+  , logicalType :: !LogicalType
+  }
+
+data Vector :: Serialization -> GHC.Nat -> Data.Kind.Type where
+  VectorBool ::
+       !(Bit.Vector n Bool#)
+    -> Vector s n
+  VectorUnsigned32 ::
+       !(Word32.Vector n Word32#)
+    -> Vector s n
+  VectorSigned32 ::
+       !(Int32.Vector n Int32#)
+    -> Vector s n
+  VectorSigned64 ::
+       !(Int64.Vector n Int64#)
+    -> Vector s n
+  VectorVariableBinary ::
+       !(ByteArrayN m)
+       -- Invariant unenforced by type system: these finite numbers must
+       -- be in nondescending order. The first element should be zero, and the
+       -- last element should be m.
+    -> !(Int32.Vector (n + 1) (Fin32# (m + 1)))
+    -> Vector 'Encode n
 
 data Column n
   = PrimitiveInt32
@@ -97,7 +154,10 @@ data NamedColumn n = NamedColumn
   , column :: !(Column n)
   }
 
-makePayloads :: Arithmetic.Nat n -> SmallArray (NamedColumn n) -> [Payload]
+makePayloads ::
+     Arithmetic.Nat n
+  -> SmallArray (NamedColumn n) -- ignores both the names and the masks
+  -> [Payload]
 makePayloads !n !cols = go 0 []
   where
   go :: Int -> [Payload] -> [Payload]
@@ -146,6 +206,43 @@ makePayloads !n !cols = go 0 []
                  in finishPrimitive b'
     else List.reverse acc
 
+makeVectorPayloads ::
+     Arithmetic.Nat n
+  -> SmallArray (Masked (Vector 'Encode) n)
+  -> [Payload]
+makeVectorPayloads !n !cols = go 0 []
+  where
+  go :: Int -> [Payload] -> [Payload]
+  go !ix !acc = if ix < PM.sizeofSmallArray cols
+    then
+      let Masked mask vec = PM.indexSmallArray cols ix
+          finishPrimitive !exposed = case Bit.expose mask of
+            PrimArray# b -> 
+              let exposedMask = ByteArray b
+                  acc' = consPrimitive exposed exposedMask acc
+               in go (ix + 1) acc'
+       in case vec of
+            VectorVariableBinary (ByteArrayN b) szs ->
+              let !acc' = consVariableBinary b
+                    (ByteArray (case Bit.expose mask of PrimArray# x -> x))
+                    (ByteArray (case Int32.expose szs of PrimArray# x -> x))
+                    acc
+               in go (ix + 1) acc'
+            VectorSigned32 v -> case Int32.expose v of
+              PrimArray# b ->
+                let b' = ByteArray b
+                 in finishPrimitive b'
+            VectorUnsigned32 v -> case Word32.expose v of
+              PrimArray# b ->
+                let b' = ByteArray b
+                 in finishPrimitive b'
+            VectorSigned64 v -> case Int64.expose v of
+              PrimArray# b ->
+                let b' = ByteArray b
+                 in finishPrimitive b'
+    else List.reverse acc
+
+
 columnToType :: Column n -> Type
 columnToType = \case
   PrimitiveInt32{} -> Int TableInt{bitWidth=32,isSigned=True}
@@ -158,6 +255,27 @@ columnToType = \case
   Date64{} -> Date (TableDate DateMillisecond)
   VariableBinaryUtf8{} -> Utf8
 
+logicalTypeToType :: LogicalType -> Type
+logicalTypeToType = \case
+  LogicalPrimitiveSigned32 -> Int TableInt{bitWidth=32,isSigned=True}
+  LogicalPrimitiveSigned64 -> Int TableInt{bitWidth=64,isSigned=True}
+  LogicalPrimitiveUnsigned32 -> Int TableInt{bitWidth=32,isSigned=False}
+  LogicalTimestampUtcMilliseconds -> Timestamp TableTimestamp{unit=Millisecond,timezone=T.pack "UTC"}
+  LogicalDurationMilliseconds -> Duration Millisecond
+  LogicalDate32 -> Date (TableDate Day)
+  LogicalDate64 -> Date (TableDate DateMillisecond)
+  LogicalUtf8 -> Utf8
+  LogicalBinary -> Binary
+
+descriptionToField :: Description -> Field
+descriptionToField Description{name,logicalType} = Field
+  { name = name
+  , nullable = True
+  , type_ = logicalTypeToType logicalType
+  , dictionary = ()
+  , children = mempty
+  }
+
 namedColumnToField :: NamedColumn n -> Field
 namedColumnToField NamedColumn{name,column} = Field
   { name = name
@@ -168,11 +286,18 @@ namedColumnToField NamedColumn{name,column} = Field
   }
 
 -- | Convert named columns to a description of the schema.
+-- Ignores the payloads.
 makeSchema :: SmallArray (NamedColumn n) -> Schema
 makeSchema !namedColumns = Schema
   { endianness = 0
   , fields = fmap namedColumnToField namedColumns
   }
+
+descriptionsToSchema :: SmallArray Description -> Schema
+descriptionsToSchema !descrs = Schema
+  { endianness = 0
+  , fields = fmap descriptionToField descrs
+  } 
 
 -- | Includes the following:
 --
@@ -197,6 +322,30 @@ encodeBatch !n cmpr !namedColumns =
         Lz4 -> encodePayloadsLz4 payloads
       bodyLength = Catenable.length body
       recordBatch = makeRecordBatch n cmpr buffers namedColumns
+      encodedRecordBatch = B.encode $ encodeMessage $ Message
+        { header=MessageHeaderRecordBatch recordBatch
+        , bodyLength=fromIntegral bodyLength
+        }
+      partB = encodePartB encodedRecordBatch
+      block = Block
+        { offset = 0 -- Offset is bogus. This is replaced by the true offset in encode.
+        , metaDataLength = fromIntegral @Int @Int32 (Catenable.length partB)
+        , bodyLength = fromIntegral @Int @Int64 bodyLength
+        }
+   in (partB <> body,block)
+
+encodeVectorBatch :: 
+     Arithmetic.Nat n
+  -> Compression
+  -> SmallArray (Masked (Vector 'Encode) n)
+  -> (Catenable.Builder,Block)
+encodeVectorBatch !n !cmpr !vecs =
+  let payloads = Exts.fromList (makeVectorPayloads n vecs) :: SmallArray Payload
+      (body,buffers) = case cmpr of
+        None -> encodePayloadsUncompressed payloads
+        Lz4 -> encodePayloadsLz4 payloads
+      bodyLength = Catenable.length body
+      recordBatch = makeVectorRecordBatch n cmpr buffers vecs
       encodedRecordBatch = B.encode $ encodeMessage $ Message
         { header=MessageHeaderRecordBatch recordBatch
         , bodyLength=fromIntegral bodyLength
@@ -239,11 +388,34 @@ makeRecordBatch ::
   -> Compression
   -> SmallArray Buffer
   -> SmallArray (NamedColumn n)
+     -- ^ We need the masks just so that we can compute the null count.
   -> RecordBatch
 makeRecordBatch !n cmpr buffers !cols = RecordBatch
   { length = fromIntegral (Nat.demote n)
   , nodes = C.map'
       (\NamedColumn{mask} -> FieldNode
+        { length=fromIntegral (Nat.demote n)
+        , nullCount=fromIntegral @Int @Int64 (Nat.demote n - naivePopCount n mask)
+        }
+      ) cols
+  , buffers = buffers
+  , compression = marshallCompression cmpr
+  }
+
+data Masked :: (GHC.Nat -> Data.Kind.Type) -> GHC.Nat -> Data.Kind.Type where
+  Masked :: Bit.Vector n Bool# -> v n -> Masked v n
+
+makeVectorRecordBatch ::
+     Arithmetic.Nat n
+  -> Compression
+  -> SmallArray Buffer
+  -> SmallArray (Masked f n)
+     -- ^ We need the masks just so that we can compute the null count.
+  -> RecordBatch
+makeVectorRecordBatch !n cmpr buffers !cols = RecordBatch
+  { length = fromIntegral (Nat.demote n)
+  , nodes = C.map'
+      (\(Masked mask _) -> FieldNode
         { length=fromIntegral (Nat.demote n)
         , nullCount=fromIntegral @Int @Int64 (Nat.demote n - naivePopCount n mask)
         }

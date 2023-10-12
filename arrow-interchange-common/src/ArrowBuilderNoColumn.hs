@@ -18,7 +18,6 @@ module ArrowBuilderNoColumn
   , eos
   , continuation
   , computePadding64
-  , makeFooter
   , encodePayloadsUncompressed
   , encodePayloadsLz4
   , encodePartB

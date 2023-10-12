@@ -1,4 +1,4 @@
-with-compiler: ghc-9.4.5
+with-compiler: ghc-9.4.7
 packages: ./arrow-interchange-common ./arrow-interchange-vext ../vext ../unlifted ../natural-arithmetic
 
 source-repository-package
@@ -6,3 +6,7 @@ source-repository-package
   location: https://github.com/layer-3-communications/flatbuffers-builder
   tag: e4e3ace3f5b4bc211ffcc009d47db7121d44b691
 
+source-repository-package
+  type: git
+  location: https://github.com/andrewthad/haskell-flatbuffers
+  tag: fd5f8a9b5fca82b311e84d25011fe7abc1c4fb7e
