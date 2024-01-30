@@ -1,5 +1,5 @@
-with-compiler: ghc-9.4.5
-packages: ./arrow-interchange-common ./arrow-interchange-vext ../vext ../unlifted ../natural-arithmetic
+with-compiler: ghc-9.6.4
+packages: ./arrow-interchange-common ./arrow-interchange-vext ../vext
 
 source-repository-package
   type: git

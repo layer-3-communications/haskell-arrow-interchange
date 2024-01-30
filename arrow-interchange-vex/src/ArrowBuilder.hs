@@ -9,6 +9,8 @@
 module ArrowBuilder
   ( Column(..)
   , NamedColumn(..)
+  , Contents(..)
+  , MaskedColumn(..)
   , Compression(..)
   , encode
     -- * Schema
@@ -71,38 +73,55 @@ data Column n
   | PrimitiveInt64 !(Int64.Vector n)
   | VariableBinaryUtf8 !(ShortText.Vector n)
 
-data NamedColumn n = NamedColumn
-  { name :: !Text
-  , mask :: !(Bool.Vector n)
+data Contents n
+  = Values !(MaskedColumn n)
+  | Children !(SmallArray (NamedColumn n))
+
+data MaskedColumn n = MaskedColumn
+  { mask :: !(Bool.Vector n)
   , column :: !(Column n)
   }
 
+data NamedColumn n = NamedColumn
+  { name :: !Text
+  , contents :: !(Contents n)
+  }
+
+flattenNamedColumn :: NamedColumn n -> SmallArray (MaskedColumn n)
+flattenNamedColumn NamedColumn{contents} = case contents of
+  Values m -> pure m
+  Children xs -> flattenNamedColumns xs
+
+flattenNamedColumns :: SmallArray (NamedColumn n) -> SmallArray (MaskedColumn n)
+flattenNamedColumns !xs = xs >>= flattenNamedColumn 
+
 makePayloads :: Arithmetic.Nat n -> SmallArray (NamedColumn n) -> [Payload]
-makePayloads !n !cols = go 0 []
-  where
-  go :: Int -> [Payload] -> [Payload]
-  go !ix !acc = if ix < PM.sizeofSmallArray cols
-    then
-      let NamedColumn{mask,column} = PM.indexSmallArray cols ix
-          finishPrimitive !exposed = 
-            let exposedMask = Bool.expose mask
-                acc' = consPrimitive exposed exposedMask acc
-             in go (ix + 1) acc'
-       in case column of
-            PrimitiveWord8 v -> finishPrimitive (Word8.expose v)
-            PrimitiveWord16 v -> finishPrimitive (Word16.expose v)
-            PrimitiveWord32 v -> finishPrimitive (Word32.expose v)
-            PrimitiveWord64 v -> finishPrimitive (Word64.expose v)
-            PrimitiveWord256 v -> finishPrimitive (Word256.expose v)
-            PrimitiveInt64 v -> finishPrimitive (Int64.expose v)
+makePayloads !n !cols = List.reverse (makePayloadsBackwardsOnto n cols [])
+
+makePayloadsBackwardsOnto :: Arithmetic.Nat n -> SmallArray (NamedColumn n) -> [Payload] -> [Payload]
+makePayloadsBackwardsOnto !n !cols !acc0 = C.foldl'
+  (\acc NamedColumn{contents} -> 
+    let finishPrimitive !exposedMask !exposed = 
+          consPrimitive exposed exposedMask acc
+     in case contents of
+          Children xs -> makePayloadsBackwardsOnto n xs acc
+          Values MaskedColumn{mask,column} -> case column of
+            PrimitiveWord8 v -> finishPrimitive (Bool.expose mask) (Word8.expose v)
+            PrimitiveWord16 v -> finishPrimitive (Bool.expose mask) (Word16.expose v)
+            PrimitiveWord32 v -> finishPrimitive (Bool.expose mask) (Word32.expose v)
+            PrimitiveWord64 v -> finishPrimitive (Bool.expose mask) (Word64.expose v)
+            -- Note: Word128 and Word256 are not handled correctly
+            PrimitiveWord128 v -> finishPrimitive (Bool.expose mask) (Word128.expose v)
+            PrimitiveWord256 v -> finishPrimitive (Bool.expose mask) (Word256.expose v)
+            PrimitiveInt64 v -> finishPrimitive (Bool.expose mask) (Int64.expose v)
             VariableBinaryUtf8 v ->
               let (offsets, totalPayloadSize) = makeVariableBinaryOffsets n v
                   exposed = unsafeConcatenate totalPayloadSize n v
                   exposedOffsets = Word32.expose offsets
                   exposedMask = Bool.expose mask
                   acc' = consVariableBinary exposed exposedMask exposedOffsets acc
-               in go (ix + 1) acc'
-    else List.reverse acc
+               in acc'
+  ) acc0 cols
 
 unsafeConcatenate :: Int -> Arithmetic.Nat n -> ShortText.Vector n -> ByteArray
 unsafeConcatenate !sz !n !v = runST $ do
@@ -142,13 +161,21 @@ columnToType = \case
   VariableBinaryUtf8{} -> Utf8
 
 namedColumnToField :: NamedColumn n -> Field
-namedColumnToField NamedColumn{name,column} = Field
-  { name = name
-  , nullable = True
-  , type_ = columnToType column
-  , dictionary = ()
-  , children = mempty
-  }
+namedColumnToField NamedColumn{name,contents} = case contents of
+  Children children -> Field
+    { name = name
+    , nullable = False
+    , type_ = Struct
+    , dictionary = ()
+    , children = C.map' namedColumnToField children
+    }
+  Values MaskedColumn{column} -> Field
+    { name = name
+    , nullable = True
+    , type_ = columnToType column
+    , dictionary = ()
+    , children = mempty
+    }
 
 -- | Convert named columns to a description of the schema.
 makeSchema :: SmallArray (NamedColumn n) -> Schema
@@ -223,11 +250,11 @@ makeRecordBatch ::
 makeRecordBatch !n cmpr buffers !cols = RecordBatch
   { length = fromIntegral (Nat.demote n)
   , nodes = C.map'
-      (\NamedColumn{mask} -> FieldNode
+      (\MaskedColumn{mask} -> FieldNode
         { length=fromIntegral (Nat.demote n)
         , nullCount=fromIntegral @Int @Int64 (Nat.demote n - naivePopCount n mask)
         }
-      ) cols
+      ) (flattenNamedColumns cols)
   , buffers = buffers
   , compression = marshallCompression cmpr
   }

@@ -24,7 +24,7 @@ library
     , flatbuffers-builder
     , array-builder
     , text >=2.0
-    , natural-arithmetic
+    , natural-arithmetic >=0.2
     , primitive >=0.8
     , arrow-interchange-common
     , text-short
@@ -37,7 +37,7 @@ library
     , bytebuild >=0.3.12
     , contiguous >=0.6
     , bytestring >=0.11.4
-    , unlifted
+    , unlifted >=0.2.1
     , vext
   hs-source-dirs: src
   default-language: GHC2021

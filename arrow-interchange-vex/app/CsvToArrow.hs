@@ -3,7 +3,7 @@
 {-# language OverloadedStrings #-}
 
 import Arithmetic.Types (Fin(Fin))
-import ArrowBuilder (NamedColumn(..),Compression(..))
+import ArrowBuilder (NamedColumn(..),Compression(..),MaskedColumn(..),Contents(..))
 import Control.Monad (when)
 import Control.Monad.ST (stToIO)
 import Data.Bytes (Bytes)
@@ -96,7 +96,7 @@ decodeColumn !n DecodedName{name,ty} xs = do
               Word8.write lt dst ix w
       dst' <- stToIO (Word8.unsafeFreeze dst)
       mask' <- stToIO (Bool.unsafeFreeze mask)
-      pure NamedColumn{name,mask=mask',column=ArrowBuilder.PrimitiveWord8 dst'}
+      pure NamedColumn{name,contents=Values MaskedColumn{mask=mask',column=ArrowBuilder.PrimitiveWord8 dst'}}
     Unsigned16 -> do
       dst <- stToIO (Word16.uninitialized n)
       mask <- stToIO (Bool.uninitialized n)
@@ -112,7 +112,7 @@ decodeColumn !n DecodedName{name,ty} xs = do
               Word16.write lt dst ix w
       dst' <- stToIO (Word16.unsafeFreeze dst)
       mask' <- stToIO (Bool.unsafeFreeze mask)
-      pure NamedColumn{name,mask=mask',column=ArrowBuilder.PrimitiveWord16 dst'}
+      pure NamedColumn{name,contents=Values MaskedColumn{mask=mask',column=ArrowBuilder.PrimitiveWord16 dst'}}
     Unsigned32 -> do
       dst <- stToIO (Word32.uninitialized n)
       mask <- stToIO (Bool.uninitialized n)
@@ -132,7 +132,7 @@ decodeColumn !n DecodedName{name,ty} xs = do
               Word32.write lt dst ix w
       dst' <- stToIO (Word32.unsafeFreeze dst)
       mask' <- stToIO (Bool.unsafeFreeze mask)
-      pure NamedColumn{name,mask=mask',column=ArrowBuilder.PrimitiveWord32 dst'}
+      pure NamedColumn{name,contents=Values MaskedColumn{mask=mask',column=ArrowBuilder.PrimitiveWord32 dst'}}
     Unsigned64 -> do
       dst <- stToIO (Word64.uninitialized n)
       mask <- stToIO (Bool.uninitialized n)
@@ -148,7 +148,7 @@ decodeColumn !n DecodedName{name,ty} xs = do
               Word64.write lt dst ix w
       dst' <- stToIO (Word64.unsafeFreeze dst)
       mask' <- stToIO (Bool.unsafeFreeze mask)
-      pure NamedColumn{name,mask=mask',column=ArrowBuilder.PrimitiveWord64 dst'}
+      pure NamedColumn{name,contents=Values MaskedColumn{mask=mask',column=ArrowBuilder.PrimitiveWord64 dst'}}
     Signed64 -> do
       dst <- stToIO (Int64.uninitialized n)
       mask <- stToIO (Bool.uninitialized n)
@@ -164,7 +164,7 @@ decodeColumn !n DecodedName{name,ty} xs = do
               Int64.write lt dst ix w
       dst' <- stToIO (Int64.unsafeFreeze dst)
       mask' <- stToIO (Bool.unsafeFreeze mask)
-      pure NamedColumn{name,mask=mask',column=ArrowBuilder.PrimitiveInt64 dst'}
+      pure NamedColumn{name,contents=Values MaskedColumn{mask=mask',column=ArrowBuilder.PrimitiveInt64 dst'}}
     String -> do
       dst <- stToIO (ShortText.uninitialized n)
       stToIO (ShortText.set Lte.reflexive dst Nat.zero n mempty)
@@ -181,7 +181,7 @@ decodeColumn !n DecodedName{name,ty} xs = do
               ShortText.write lt dst ix s
       dst' <- stToIO (ShortText.unsafeFreeze dst)
       mask' <- stToIO (Bool.unsafeFreeze mask)
-      pure NamedColumn{name,mask=mask',column=ArrowBuilder.VariableBinaryUtf8 dst'}
+      pure NamedColumn{name,contents=Values MaskedColumn{mask=mask',column=ArrowBuilder.VariableBinaryUtf8 dst'}}
 
 zeroBoolArray :: Bool.MutableVector RealWorld n -> IO ()
 zeroBoolArray v = do

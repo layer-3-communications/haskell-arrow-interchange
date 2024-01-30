@@ -1,5 +1,5 @@
-with-compiler: ghc-9.2.7
-packages: ./arrow-interchange-common ./arrow-interchange-vex ../vex-indef ../vex ../natural-arithmetic ../unlifted
+with-compiler: ghc-9.6.4
+packages: ./arrow-interchange-common ./arrow-interchange-vex ../vex-indef ../vex ../basics
 
 source-repository-package
   type: git
