@@ -16,6 +16,8 @@ import qualified Flatbuffers.Builder as B
 import qualified System.IO as IO
 
 $(deriveFromJSON defaultOptions ''Buffer)
+$(deriveFromJSON defaultOptions ''DateUnit)
+$(deriveFromJSON defaultOptions ''TableDate)
 $(deriveFromJSON defaultOptions ''TableInt)
 $(deriveFromJSON defaultOptions ''TimeUnit)
 $(deriveFromJSON defaultOptions ''TableTimestamp)
