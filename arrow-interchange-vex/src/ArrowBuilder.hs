@@ -72,6 +72,7 @@ data Column n
   | PrimitiveWord256 !(Word256.Vector n)
   | PrimitiveInt64 !(Int64.Vector n)
   | VariableBinaryUtf8 !(ShortText.Vector n)
+  | NoColumn -- We use this when encoding structs. It has no payload.
 
 data Contents n
   = Values !(MaskedColumn n)
@@ -87,13 +88,13 @@ data NamedColumn n = NamedColumn
   , contents :: !(Contents n)
   }
 
-flattenNamedColumn :: NamedColumn n -> SmallArray (MaskedColumn n)
-flattenNamedColumn NamedColumn{contents} = case contents of
+flattenNamedColumn :: Arithmetic.Nat n -> NamedColumn n -> SmallArray (MaskedColumn n)
+flattenNamedColumn !n NamedColumn{contents} = case contents of
   Values m -> pure m
-  Children xs -> flattenNamedColumns xs
+  Children xs -> C.insertAt (flattenNamedColumns n xs) 0 MaskedColumn{mask=makeTrueVec n,column=NoColumn}
 
-flattenNamedColumns :: SmallArray (NamedColumn n) -> SmallArray (MaskedColumn n)
-flattenNamedColumns !xs = xs >>= flattenNamedColumn 
+flattenNamedColumns :: Arithmetic.Nat n -> SmallArray (NamedColumn n) -> SmallArray (MaskedColumn n)
+flattenNamedColumns !n !xs = xs >>= flattenNamedColumn n
 
 makePayloads :: Arithmetic.Nat n -> SmallArray (NamedColumn n) -> [Payload]
 makePayloads !n !cols = List.reverse (makePayloadsBackwardsOnto n cols [])
@@ -104,7 +105,7 @@ makePayloadsBackwardsOnto !n !cols !acc0 = C.foldl'
     let finishPrimitive !exposedMask !exposed = 
           consPrimitive exposed exposedMask acc
      in case contents of
-          Children xs -> makePayloadsBackwardsOnto n xs acc
+          Children xs -> makePayloadsBackwardsOnto n xs (consValidityMask (Bool.expose (makeTrueVec n)) acc)
           Values MaskedColumn{mask,column} -> case column of
             PrimitiveWord8 v -> finishPrimitive (Bool.expose mask) (Word8.expose v)
             PrimitiveWord16 v -> finishPrimitive (Bool.expose mask) (Word16.expose v)
@@ -254,7 +255,13 @@ makeRecordBatch !n cmpr buffers !cols = RecordBatch
         { length=fromIntegral (Nat.demote n)
         , nullCount=fromIntegral @Int @Int64 (Nat.demote n - naivePopCount n mask)
         }
-      ) (flattenNamedColumns cols)
+      ) (flattenNamedColumns n cols)
   , buffers = buffers
   , compression = marshallCompression cmpr
   }
+
+makeTrueVec :: Arithmetic.Nat n -> Bool.Vector n
+makeTrueVec !n = Bool.runST $ do
+  dst <- Bool.uninitialized n
+  Bool.set Lte.reflexive dst Nat.zero n True
+  Bool.unsafeFreeze dst

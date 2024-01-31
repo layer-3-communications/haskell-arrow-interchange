@@ -13,6 +13,7 @@ module ArrowBuilderNoColumn
   , encodePreludeAndSchema
   , encodeFooterAndEpilogue
   , consPrimitive
+  , consValidityMask
   , consVariableBinary
   , asciiArrow1
   , eos
@@ -73,6 +74,12 @@ computePadding64 !n = (if mod n 64 == 0 then 0 else 64 - mod n 64) :: Int
 
 computePadding8 :: Int -> Int
 computePadding8 !n = (if mod n 8 == 0 then 0 else 8 - mod n 8) :: Int
+
+-- Used for validity masks for structs
+consValidityMask :: ByteArray -> [Payload] -> [Payload]
+consValidityMask !exposedMask !acc =
+    Payload { payload=exposedMask }
+  : acc
 
 -- We cons these backwards since the list gets reversed at the end.
 consPrimitive :: ByteArray -> ByteArray -> [Payload] -> [Payload]
