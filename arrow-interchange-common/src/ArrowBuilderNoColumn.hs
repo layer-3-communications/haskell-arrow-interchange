@@ -15,6 +15,7 @@ module ArrowBuilderNoColumn
   , consPrimitive
   , consValidityMask
   , consVariableBinary
+  , consListMetadata
   , asciiArrow1
   , eos
   , continuation
@@ -92,6 +93,12 @@ consVariableBinary :: ByteArray -> ByteArray -> ByteArray -> [Payload] -> [Paylo
 consVariableBinary !exposed !exposedMask !exposedOffsets !acc =
     Payload {payload=exposed }
   : Payload {payload=exposedOffsets }
+  : Payload {payload=exposedMask }
+  : acc
+
+consListMetadata :: ByteArray -> ByteArray -> [Payload] -> [Payload]
+consListMetadata !exposedMask !exposedOffsets !acc =
+    Payload {payload=exposedOffsets }
   : Payload {payload=exposedMask }
   : acc
 

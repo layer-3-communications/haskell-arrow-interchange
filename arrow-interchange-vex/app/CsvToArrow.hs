@@ -37,6 +37,7 @@ import qualified Vector.Bool.Internal as Bool
 import qualified Vector.Boxed as Boxed
 import qualified Vector.Int64.Internal as Int64
 import qualified Vector.ShortText.Internal as ShortText
+import qualified Vector.ShortTexts.Internal as ShortTexts
 import qualified Vector.Word16.Internal as Word16
 import qualified Vector.Word32.Internal as Word32
 import qualified Vector.Word64.Internal as Word64
@@ -182,6 +183,23 @@ decodeColumn !n DecodedName{name,ty} xs = do
       dst' <- stToIO (ShortText.unsafeFreeze dst)
       mask' <- stToIO (Bool.unsafeFreeze mask)
       pure NamedColumn{name,contents=Values MaskedColumn{mask=mask',column=ArrowBuilder.VariableBinaryUtf8 dst'}}
+    Strings -> do
+      dst <- stToIO (ShortTexts.uninitialized n)
+      stToIO (ShortTexts.set Lte.reflexive dst Nat.zero n mempty)
+      mask <- stToIO (Bool.uninitialized n)
+      zeroBoolArray mask
+      Fin.ascendM_ n $ \(Fin ix lt) -> do
+        let str = Boxed.index lt xs' ix
+        if Bytes.null str
+          then pure ()
+          else case traverse (TS.fromShortByteString . Bytes.toShortByteString) (Bytes.split 0x3B str) of
+            Nothing -> fail "failed to decode utf-8 value in strs list"
+            Just (s :: [ShortText]) -> stToIO $ do
+              Bool.write lt mask ix True
+              ShortTexts.write lt dst ix (Exts.fromList s)
+      dst' <- stToIO (ShortTexts.unsafeFreeze dst)
+      mask' <- stToIO (Bool.unsafeFreeze mask)
+      pure NamedColumn{name,contents=Values MaskedColumn{mask=mask',column=ArrowBuilder.ListVariableBinaryUtf8 dst'}}
 
 zeroBoolArray :: Bool.MutableVector RealWorld n -> IO ()
 zeroBoolArray v = do
@@ -199,6 +217,7 @@ decodeName x = case T.splitOn (T.singleton ':') x of
       "u64" -> pure Unsigned64
       "s64" -> pure Signed64
       "str" -> pure String
+      "strs" -> pure Strings
       _ -> fail ("unrecognized type: " ++ T.unpack tyStr)
     pure DecodedName{name,ty}
   _ -> fail ("failed to decode header: " ++ T.unpack x)
@@ -215,3 +234,4 @@ data Ty
   | Unsigned64
   | Signed64
   | String
+  | Strings

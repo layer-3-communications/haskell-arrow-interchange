@@ -85,6 +85,7 @@ data Type
   | Date !TableDate
   | Duration !TimeUnit
   | Struct
+  | List
 
 newtype TableFixedSizeBinary = TableFixedSizeBinary
   { byteWidth :: Int32
@@ -153,4 +154,5 @@ encodeType = \case
   Date table -> B.Union{tag=8,object=encodeTableDate table}
   Timestamp table -> B.Union{tag=10,object=encodeTableTimestamp table}
   Duration (TimeUnit w) -> B.Union{tag=18,object=B.Object $ Exts.fromList [B.unsigned16 w]}
+  List -> B.Union{tag=12,object=B.Object mempty}
   Struct -> B.Union{tag=13,object=B.Object mempty}

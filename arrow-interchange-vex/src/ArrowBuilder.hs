@@ -4,6 +4,7 @@
 {-# language DuplicateRecordFields #-}
 {-# language TypeApplications #-}
 {-# language TypeOperators #-}
+{-# language ScopedTypeVariables #-}
 {-# language OverloadedRecordDot #-}
 
 module ArrowBuilder
@@ -30,6 +31,7 @@ import Data.Int
 
 import ArrowBuilderNoColumn
 
+import Control.Monad (join)
 import Control.Monad.ST (runST)
 import Data.Primitive (SmallArray,ByteArray(ByteArray))
 import Data.Text (Text)
@@ -45,6 +47,8 @@ import qualified Data.List as List
 import qualified Data.Primitive.Contiguous as C
 import qualified Data.Primitive as PM
 import qualified GHC.Exts as Exts
+import qualified Data.Text as T
+import qualified Data.Primitive.Unlifted.Array as PM
 import qualified Data.Bytes.Builder.Bounded as Bounded
 import qualified Data.Bytes as Bytes
 import qualified Data.Bytes.Chunks as Chunks
@@ -59,6 +63,7 @@ import qualified Vector.Word256.Internal as Word256
 import qualified Vector.Int64.Internal as Int64
 import qualified Vector.Bool.Internal as Bool
 import qualified Vector.ShortText.Internal as ShortText
+import qualified Vector.ShortTexts.Internal as ShortTexts
 import qualified Data.ByteString.Short as SBS
 import qualified Data.ByteString.Short.Internal as SBS
 import qualified Data.Text.Short as TS
@@ -72,6 +77,7 @@ data Column n
   | PrimitiveWord256 !(Word256.Vector n)
   | PrimitiveInt64 !(Int64.Vector n)
   | VariableBinaryUtf8 !(ShortText.Vector n)
+  | ListVariableBinaryUtf8 !(ShortTexts.Vector n)
   | NoColumn -- We use this when encoding structs. It has no payload.
 
 data Contents n
@@ -122,6 +128,13 @@ makePayloadsBackwardsOnto !n !cols !acc0 = C.foldl'
                   exposedMask = Bool.expose mask
                   acc' = consVariableBinary exposed exposedMask exposedOffsets acc
                in acc'
+            ListVariableBinaryUtf8 txts -> case explodeVarBinList n txts of
+              StringListExplosion{elementCount=m,elements=v,indices=listOffsets} -> 
+                let (offsets, totalPayloadSize) = makeVariableBinaryOffsets m v
+                    exposed = unsafeConcatenate totalPayloadSize m v
+                    acc' = consVariableBinary exposed (Bool.expose (makeTrueVec m)) (Word32.expose offsets)
+                      (consListMetadata (Bool.expose mask) (Word32.expose listOffsets) acc)
+                 in acc'
   ) acc0 cols
 
 unsafeConcatenate :: Int -> Arithmetic.Nat n -> ShortText.Vector n -> ByteArray
@@ -137,6 +150,48 @@ unsafeConcatenate !sz !n !v = runST $ do
   if total == sz
     then PM.unsafeFreezeByteArray dst
     else errorWithoutStackTrace "arrow-interchange:ArrowBuilder.unsafeConcatenate"
+
+data StringListExplosion n = forall m. StringListExplosion
+  { elementCount :: !(Arithmetic.Nat m)
+  , elements :: !(ShortText.Vector m)
+  , indices :: !(Word32.Vector (n + 1)) -- indices into texts array (must be in nondescending order)
+  }
+
+countAllElements :: Arithmetic.Nat n -> ShortTexts.Vector n -> Int
+countAllElements !n !src = Fin.ascend' n 0 (\(Fin ix lt) acc -> PM.sizeofUnliftedArray (ShortTexts.index lt src ix) + acc)
+
+explodeVarBinList :: forall n. Arithmetic.Nat n -> ShortTexts.Vector n -> StringListExplosion n
+explodeVarBinList !n !src = runST $ do
+  ixsDst <- Word32.uninitialized (Nat.succ n)
+  let totalElements = countAllElements n src
+  Nat.with totalElements $ \m -> do
+    elemsDst <- ShortText.uninitialized m
+    ShortText.set Lte.reflexive elemsDst Nat.zero m TS.empty
+    finalOffset <- Fin.ascendM n (0 :: Int) $ \(Fin ix lt) !offset0 -> C.foldlM'
+      (\offset txt -> case Fin.fromInt m offset of
+        Nothing -> errorWithoutStackTrace "ArrowBuilder.explodeVarBinList: implementation mistake A"
+        Just (Fin off offLt) -> do
+          ShortText.write offLt elemsDst off txt
+          pure (offset + 1)
+      ) offset0 (ShortTexts.index lt src ix)
+    if finalOffset /= totalElements
+      then errorWithoutStackTrace "ArrowBuilder.explodeVarBinList: implementation mistake B"
+      else do
+        elemsDst' <- ShortText.unsafeFreeze elemsDst
+        finalIxOff <- Fin.ascendM n (0 :: Int) $ \(Fin ix lt) !offset0 -> do
+          let txts = ShortTexts.index lt src ix
+          Word32.write (Lt.weakenR @1 lt) ixsDst ix (fromIntegral offset0 :: Word32)
+          pure (offset0 + PM.sizeofUnliftedArray txts)
+        if finalIxOff /= Nat.demote m
+          then errorWithoutStackTrace "ArrowBuilder.explodeVarBinList: implementation mistake C"
+          else do
+            Word32.write (Lt.incrementL @n Lt.zero) ixsDst n (fromIntegral finalIxOff :: Word32)
+            ixsDst' <- Word32.unsafeFreeze ixsDst
+            pure StringListExplosion
+              { elementCount = m
+              , elements = elemsDst'
+              , indices = ixsDst'
+              }
 
 -- Returns the offsets vector and the total size of the concatenated strings
 makeVariableBinaryOffsets :: forall n. Arithmetic.Nat n -> ShortText.Vector n -> (Word32.Vector (n + 1), Int)
@@ -160,6 +215,7 @@ columnToType = \case
   PrimitiveWord256{} -> FixedSizeBinary TableFixedSizeBinary{byteWidth=32}
   PrimitiveInt64{} -> Int TableInt{bitWidth=64,isSigned=True}
   VariableBinaryUtf8{} -> Utf8
+  ListVariableBinaryUtf8{} -> List
 
 namedColumnToField :: NamedColumn n -> Field
 namedColumnToField NamedColumn{name,contents} = case contents of
@@ -175,7 +231,15 @@ namedColumnToField NamedColumn{name,contents} = case contents of
     , nullable = True
     , type_ = columnToType column
     , dictionary = ()
-    , children = mempty
+    , children = case column of
+        ListVariableBinaryUtf8{} -> pure Field
+          { name = T.empty
+          , nullable = False
+          , type_ = Utf8
+          , dictionary = ()
+          , children = mempty
+          }
+        _ -> mempty
     }
 
 -- | Convert named columns to a description of the schema.
@@ -250,11 +314,23 @@ makeRecordBatch ::
   -> RecordBatch
 makeRecordBatch !n cmpr buffers !cols = RecordBatch
   { length = fromIntegral (Nat.demote n)
-  , nodes = C.map'
-      (\MaskedColumn{mask} -> FieldNode
-        { length=fromIntegral (Nat.demote n)
-        , nullCount=fromIntegral @Int @Int64 (Nat.demote n - naivePopCount n mask)
-        }
+  , nodes = join $ C.map'
+      (\MaskedColumn{mask,column} -> case column of
+        ListVariableBinaryUtf8 txts -> C.doubleton
+          ( FieldNode
+            { length=fromIntegral (Nat.demote n)
+            , nullCount=fromIntegral @Int @Int64 (Nat.demote n - naivePopCount n mask)
+            }
+          )
+          ( FieldNode
+            { length=fromIntegral (countAllElements n txts)
+            , nullCount=0
+            }
+          )
+        _ -> pure $ FieldNode
+          { length=fromIntegral (Nat.demote n)
+          , nullCount=fromIntegral @Int @Int64 (Nat.demote n - naivePopCount n mask)
+          }
       ) (flattenNamedColumns n cols)
   , buffers = buffers
   , compression = marshallCompression cmpr

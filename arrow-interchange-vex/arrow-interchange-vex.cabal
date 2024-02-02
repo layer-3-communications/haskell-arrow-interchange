@@ -16,8 +16,9 @@ common shared
     , flatbuffers-builder
     , array-builder
     , text >=2.0
-    , natural-arithmetic
+    , natural-arithmetic >=0.2.1
     , primitive >=0.8
+    , primitive-unlifted >=0.1.3
 
 library instantiations
   import: shared
@@ -35,6 +36,7 @@ library instantiations
     , Vector.Word256.Internal
     , Vector.Int64.Internal
     , Vector.ShortText.Internal
+    , Vector.ShortTexts.Internal
   mixins:
     vex-indef (Vector.Unboxed as Vector.Bool.Internal)
       requires (Element as Basics.BitBool, Array as Basics.ByteArray),
@@ -54,6 +56,8 @@ library instantiations
       requires (Element as Basics.Int64, Array as Basics.ByteArray),
     vex-indef (Vector.Unboxed as Vector.ShortText.Internal)
       requires (Element as Basics.ShortText, Array as Basics.ArrayArray),
+    vex-indef (Vector.Unboxed as Vector.ShortTexts.Internal)
+      requires (Element as Basics.ShortTexts, Array as Basics.ArrayArray)
 
 library
   import: shared
