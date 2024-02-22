@@ -69,12 +69,16 @@ import qualified Data.ByteString.Short.Internal as SBS
 import qualified Data.Text.Short as TS
 
 data Column n
-  = PrimitiveWord8 !(Word8.Vector n)
+  = PrimitiveBool !(Bool.Vector n)
+  | PrimitiveWord8 !(Word8.Vector n)
   | PrimitiveWord16 !(Word16.Vector n)
   | PrimitiveWord32 !(Word32.Vector n)
   | PrimitiveWord64 !(Word64.Vector n)
-  | PrimitiveWord128 !(Word128.Vector n)
   | PrimitiveWord256 !(Word256.Vector n)
+  | Word128FixedSizeListWord8 !(Word128.Vector n)
+    -- ^ Encode a vector of unsigned 128-bit words as FixedSizeList<byte>[16]
+  | Word128FixedSizeBinary !(Word128.Vector n)
+    -- ^ Encode a vector of unsigned 128-bit words as FixedSizeBinary(16)
   | PrimitiveInt64 !(Int64.Vector n)
   | Date64 !(Int64.Vector n)
   | VariableBinaryUtf8 !(ShortText.Vector n)
@@ -114,12 +118,17 @@ makePayloadsBackwardsOnto !n !cols !acc0 = C.foldl'
      in case contents of
           Children xs -> makePayloadsBackwardsOnto n xs (consValidityMask (Bool.expose (makeTrueVec n)) acc)
           Values MaskedColumn{mask,column} -> case column of
+            -- Bool does not actually use primitive but the layout is the same
+            PrimitiveBool v -> finishPrimitive (Bool.expose mask) (Bool.expose v)
             PrimitiveWord8 v -> finishPrimitive (Bool.expose mask) (Word8.expose v)
             PrimitiveWord16 v -> finishPrimitive (Bool.expose mask) (Word16.expose v)
             PrimitiveWord32 v -> finishPrimitive (Bool.expose mask) (Word32.expose v)
             PrimitiveWord64 v -> finishPrimitive (Bool.expose mask) (Word64.expose v)
-            -- Note: Word128 and Word256 are not handled correctly
-            PrimitiveWord128 v -> finishPrimitive (Bool.expose mask) (Word128.expose v)
+            -- Note: Word128 and Word256 are not handled correctly. We need to
+            -- ensure a big-endian byte order.
+            Word128FixedSizeListWord8 v -> consPrimitive (Word128.expose v) (Bool.expose (makeTrueVec n))
+              $ consValidityMask (Bool.expose mask) acc
+            Word128FixedSizeBinary v -> finishPrimitive (Bool.expose mask) (Word128.expose v)
             PrimitiveWord256 v -> finishPrimitive (Bool.expose mask) (Word256.expose v)
             PrimitiveInt64 v -> finishPrimitive (Bool.expose mask) (Int64.expose v)
             Date64 v -> finishPrimitive (Bool.expose mask) (Int64.expose v)
@@ -209,11 +218,13 @@ makeVariableBinaryOffsets !n !src = runST $ do
 
 columnToType :: Column n -> Type
 columnToType = \case
+  PrimitiveBool{} -> Bool
   PrimitiveWord8{} -> Int TableInt{bitWidth=8,isSigned=False}
   PrimitiveWord16{} -> Int TableInt{bitWidth=16,isSigned=False}
   PrimitiveWord32{} -> Int TableInt{bitWidth=32,isSigned=False}
   PrimitiveWord64{} -> Int TableInt{bitWidth=64,isSigned=False}
-  PrimitiveWord128{} -> FixedSizeBinary TableFixedSizeBinary{byteWidth=16}
+  Word128FixedSizeListWord8{} -> FixedSizeList TableFixedSizeList{listSize=16}
+  Word128FixedSizeBinary{} -> FixedSizeBinary TableFixedSizeBinary{byteWidth=16}
   PrimitiveWord256{} -> FixedSizeBinary TableFixedSizeBinary{byteWidth=32}
   PrimitiveInt64{} -> Int TableInt{bitWidth=64,isSigned=True}
   Date64{} -> Date (TableDate DateMillisecond)
@@ -239,6 +250,14 @@ namedColumnToField NamedColumn{name,contents} = case contents of
           { name = T.empty
           , nullable = False
           , type_ = Utf8
+          , dictionary = Nothing
+          , children = mempty
+          }
+        -- We currently only used fixed-size lists for unsigned 8-bit words.
+        Word128FixedSizeListWord8{} -> pure Field
+          { name = T.empty
+          , nullable = False
+          , type_ = Int TableInt{bitWidth=8,isSigned=False}
           , dictionary = Nothing
           , children = mempty
           }
@@ -327,6 +346,17 @@ makeRecordBatch !n cmpr buffers !cols = RecordBatch
           )
           ( FieldNode
             { length=fromIntegral (countAllElements n txts)
+            , nullCount=0
+            }
+          )
+        Word128FixedSizeListWord8 _ -> C.doubleton
+          ( FieldNode
+            { length=fromIntegral (Nat.demote n)
+            , nullCount=fromIntegral @Int @Int64 (Nat.demote n - naivePopCount n mask)
+            }
+          )
+          ( FieldNode
+            { length=fromIntegral (16 * Nat.demote n)
             , nullCount=0
             }
           )

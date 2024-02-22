@@ -8,6 +8,7 @@ module ArrowSchema
   , Schema(..)
   , TableInt(..)
   , TableFixedSizeBinary(..)
+  , TableFixedSizeList(..)
   , TableTimestamp(..)
   , TableDate(..)
   , Buffer(..)
@@ -88,6 +89,7 @@ data Type
   = Null
   | Int TableInt
   | FixedSizeBinary !TableFixedSizeBinary
+  | FixedSizeList !TableFixedSizeList
   | Utf8
   | Bool
   | Timestamp !TableTimestamp
@@ -98,6 +100,10 @@ data Type
 
 newtype TableFixedSizeBinary = TableFixedSizeBinary
   { byteWidth :: Int32
+  }
+
+newtype TableFixedSizeList = TableFixedSizeList
+  { listSize :: Int32
   }
 
 data TableInt = TableInt
@@ -161,6 +167,11 @@ encodeTableBinary TableFixedSizeBinary{byteWidth} = B.Object $ Exts.fromList
   [ B.signed32 byteWidth
   ]
 
+encodeTableFixedSizeList :: TableFixedSizeList -> B.Object
+encodeTableFixedSizeList TableFixedSizeList{listSize} = B.Object $ Exts.fromList
+  [ B.signed32 listSize
+  ]
+
 encodeType :: Type -> B.Union
 encodeType = \case
   Null -> B.Union{tag=1,object=B.Object mempty}
@@ -168,6 +179,7 @@ encodeType = \case
   Utf8 -> B.Union{tag=5,object=B.Object mempty}
   Bool -> B.Union{tag=6,object=B.Object mempty}
   FixedSizeBinary table -> B.Union{tag=15,object=encodeTableBinary table}
+  FixedSizeList table -> B.Union{tag=16,object=encodeTableFixedSizeList table}
   Date table -> B.Union{tag=8,object=encodeTableDate table}
   Timestamp table -> B.Union{tag=10,object=encodeTableTimestamp table}
   Duration (TimeUnit w) -> B.Union{tag=18,object=B.Object $ Exts.fromList [B.unsigned16 w]}
