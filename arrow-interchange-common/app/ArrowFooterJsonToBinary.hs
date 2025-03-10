@@ -1,8 +1,7 @@
 {-# language LambdaCase #-}
 {-# language TemplateHaskell #-}
 
-import ArrowFile
-import ArrowSchema
+import Arrow.Builder.Raw
 import Control.Exception (throwIO)
 import Control.Monad (when)
 import Data.Aeson (eitherDecodeFileStrict)

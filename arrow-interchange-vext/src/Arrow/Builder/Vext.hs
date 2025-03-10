@@ -8,7 +8,7 @@
 {-# language OverloadedRecordDot #-}
 {-# language PatternSynonyms #-}
 
-module ArrowBuilder
+module Arrow.Builder.Vext
   ( Column(..)
   , VariableBinary(..)
   , NamedColumn(..)
@@ -22,44 +22,28 @@ module ArrowBuilder
   , encodeFooterAndEpilogue
   ) where
 
-import ArrowFile
-import ArrowSchema
-import ArrowMessage
+import Arrow.Builder.Raw
 
-import Data.Word
 import Data.Int
 
-import ArrowBuilderNoColumn
-
-import GHC.Exts (Int32#,Int64#,Word32#)
-import Control.Monad.ST (runST)
+import Arithmetic.Types (Fin32#)
 import Data.Bytes.Types (ByteArrayN(ByteArrayN))
 import Data.Primitive (SmallArray,ByteArray(ByteArray))
+import Data.Primitive.Unlifted.Array (UnliftedArray)
 import Data.Text (Text)
+import Data.Unlifted (Bool#, pattern True#)
 import Data.Unlifted (PrimArray#(PrimArray#))
-import Arithmetic.Types (Fin(Fin))
+import GHC.Exts (Int32#,Int64#,Word32#)
 import GHC.TypeNats (type (+))
-import Data.Unlifted (Bool#, pattern True#, pattern False#)
-import Arithmetic.Types (Fin32#)
 
 import qualified Arithmetic.Fin as Fin
-import qualified Arithmetic.Lt as Lt
-import qualified Arithmetic.Lte as Lte
 import qualified Arithmetic.Nat as Nat
 import qualified Arithmetic.Types as Arithmetic
 import qualified Data.Builder.Catenable.Bytes as Catenable
-import qualified Data.ByteString.Short as SBS
-import qualified Data.ByteString.Short.Internal as SBS
-import qualified Data.Bytes as Bytes
-import qualified Data.Bytes.Builder.Bounded as Bounded
-import qualified Data.Bytes.Chunks as Chunks
-import qualified Data.List as List
 import qualified Data.Primitive as PM
 import qualified Data.Primitive.Contiguous as C
 import qualified Data.Text as T
-import qualified Data.Text.Short as TS
 import qualified Flatbuffers.Builder as B
-import qualified GHC.Exts as Exts
 import qualified GHC.TypeNats as GHC
 import qualified Vector.Bit as Bit
 import qualified Vector.Int32 as Int32
@@ -97,10 +81,10 @@ data NamedColumn n = NamedColumn
   , column :: !(Column n)
   }
 
-makePayloads :: Arithmetic.Nat n -> SmallArray (NamedColumn n) -> [Payload]
-makePayloads !n !cols = go 0 []
+makePayloads :: Arithmetic.Nat n -> SmallArray (NamedColumn n) -> UnliftedArray ByteArray
+makePayloads !_ !cols = go 0 PayloadsNil
   where
-  go :: Int -> [Payload] -> [Payload]
+  go :: Int -> Payloads -> UnliftedArray ByteArray
   go !ix !acc = if ix < PM.sizeofSmallArray cols
     then
       let NamedColumn{mask,column} = PM.indexSmallArray cols ix
@@ -144,7 +128,7 @@ makePayloads !n !cols = go 0 []
               PrimArray# b ->
                 let b' = ByteArray b
                  in finishPrimitive b'
-    else List.reverse acc
+    else payloadsToArray acc
 
 columnToType :: Column n -> Type
 columnToType = \case
@@ -191,7 +175,7 @@ encodeBatch ::
   -> SmallArray (NamedColumn n)
   -> (Catenable.Builder,Block)
 encodeBatch !n cmpr !namedColumns =
-  let payloads = Exts.fromList (makePayloads n namedColumns) :: SmallArray Payload
+  let payloads = makePayloads n namedColumns :: UnliftedArray ByteArray
       (body,buffers) = case cmpr of
         None -> encodePayloadsUncompressed payloads
         Lz4 -> encodePayloadsLz4 payloads

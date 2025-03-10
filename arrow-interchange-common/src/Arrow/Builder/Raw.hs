@@ -1,17 +1,56 @@
 {-# language DataKinds #-}
+{-# language DuplicateRecordFields #-}
 {-# language LambdaCase #-}
 {-# language MagicHash #-}
-{-# language DuplicateRecordFields #-}
+{-# language OverloadedRecordDot #-}
+{-# language PatternSynonyms #-}
 {-# language TypeApplications #-}
 {-# language TypeOperators #-}
-{-# language OverloadedRecordDot #-}
 
-module ArrowBuilderNoColumn
-  ( Payload(..)
+module Arrow.Builder.Raw
+  ( -- * Types
+    Payloads(..)
   , Compression(..)
+    -- * Flatbuffer Types And Encoders
+    -- ** File
+  , Footer(..)
+  , Block(..)
+  , encodeFooter
+    -- ** Schema
+  , Field(..)
+  , Type(..)
+  , Schema(..)
+  , TableInt(..)
+  , TableFixedSizeBinary(..)
+  , TableFixedSizeList(..)
+  , TableTimestamp(..)
+  , TableDate(..)
+  , Buffer(..)
+  , TimeUnit(..)
+  , DateUnit(..)
+  , DictionaryEncoding(..)
+  , pattern Second
+  , pattern Millisecond
+  , pattern Microsecond
+  , pattern Nanosecond
+  , pattern Day
+  , pattern DateMillisecond
+  , encodeSchema
+    -- ** Message
+  , Message(..)
+  , FieldNode(..)
+  , RecordBatch(..)
+  , MessageHeader(..)
+  , CompressionType(..)
+  , BodyCompression(..)
+  , encodeMessage
+  , encodeRecordBatch
+
+    -- * Encoding Helpers
   , makeFooter
   , encodePreludeAndSchema
   , encodeFooterAndEpilogue
+  , payloadsToArray
   , consPrimitive
   , consValidityMask
   , consVariableBinary
@@ -20,7 +59,6 @@ module ArrowBuilderNoColumn
   , eos
   , continuation
   , computePadding64
-  , makeFooter
   , encodePayloadsUncompressed
   , encodePayloadsLz4
   , encodePartB
@@ -32,22 +70,14 @@ import ArrowSchema
 import ArrowMessage
 
 import Data.Word
-import Data.Int
 
-import Control.Monad.ST (runST)
-import Data.Foldable (foldl')
-import Data.Primitive (SmallArray,ByteArray(ByteArray))
-import Data.Text (Text)
-import Arithmetic.Types (Fin(Fin))
-import GHC.TypeNats (type (+))
+import Data.Primitive (SmallArray,ByteArray)
+import Data.Primitive.Unlifted.Array (UnliftedArray, sizeofUnliftedArray)
+import Data.Primitive.Unlifted.Array (writeUnliftedArray, unsafeFreezeUnliftedArray, newUnliftedArray)
+import Control.Monad.ST.Run (runUnliftedArrayST)
 
-import qualified Arithmetic.Fin as Fin
-import qualified Arithmetic.Types as Arithmetic
 import qualified Arithmetic.Nat as Nat
-import qualified Arithmetic.Lt as Lt
-import qualified Arithmetic.Lte as Lte
 import qualified Lz4.Frame as Lz4
-import qualified Data.List as List
 import qualified Data.Bytes.Encode.LittleEndian as LittleEndian
 import qualified Data.Primitive.Contiguous as C
 import qualified Data.Primitive as PM
@@ -57,50 +87,48 @@ import qualified Data.Bytes as Bytes
 import qualified Data.Bytes.Chunks as Chunks
 import qualified Flatbuffers.Builder as B
 import qualified Data.Builder.Catenable.Bytes as Catenable
-import qualified Data.ByteString.Short as SBS
-import qualified Data.ByteString.Short.Internal as SBS
-import qualified Data.Text.Short as TS
 
-
-newtype Payload = Payload
-  { payload :: ByteArray
-  }
+data Payloads
+  = PayloadsCons !ByteArray !Payloads
+  | PayloadsNil
 
 data Compression
   = None
   | Lz4
 
 computePadding64 :: Int -> Int
+{-# inline computePadding64 #-}
 computePadding64 !n = (if mod n 64 == 0 then 0 else 64 - mod n 64) :: Int
 
 computePadding8 :: Int -> Int
+{-# inline computePadding8 #-}
 computePadding8 !n = (if mod n 8 == 0 then 0 else 8 - mod n 8) :: Int
 
 -- Used for validity masks for structs
-consValidityMask :: ByteArray -> [Payload] -> [Payload]
+consValidityMask :: ByteArray -> Payloads -> Payloads
 consValidityMask !exposedMask !acc =
-    Payload { payload=exposedMask }
-  : acc
+    PayloadsCons exposedMask
+  $ acc
 
 -- We cons these backwards since the list gets reversed at the end.
-consPrimitive :: ByteArray -> ByteArray -> [Payload] -> [Payload]
+consPrimitive :: ByteArray -> ByteArray -> Payloads -> Payloads
 consPrimitive !exposed !exposedMask !acc =
-    Payload { payload=exposed }
-  : Payload { payload=exposedMask }
-  : acc
+    PayloadsCons exposed
+  $ PayloadsCons exposedMask
+  $ acc
 
-consVariableBinary :: ByteArray -> ByteArray -> ByteArray -> [Payload] -> [Payload]
+consVariableBinary :: ByteArray -> ByteArray -> ByteArray -> Payloads -> Payloads
 consVariableBinary !exposed !exposedMask !exposedOffsets !acc =
-    Payload {payload=exposed }
-  : Payload {payload=exposedOffsets }
-  : Payload {payload=exposedMask }
-  : acc
+    PayloadsCons exposed
+  $ PayloadsCons exposedOffsets
+  $ PayloadsCons exposedMask
+  $ acc
 
-consListMetadata :: ByteArray -> ByteArray -> [Payload] -> [Payload]
+consListMetadata :: ByteArray -> ByteArray -> Payloads -> Payloads
 consListMetadata !exposedMask !exposedOffsets !acc =
-    Payload {payload=exposedOffsets }
-  : Payload {payload=exposedMask }
-  : acc
+    PayloadsCons exposedOffsets
+  $ PayloadsCons exposedMask
+  $ acc
 
 -- | Encodes the schema and the header that comes before it.
 -- Length is always a multiple of 64 bytes.
@@ -158,13 +186,13 @@ makeFooter !blocks !schema = Footer
 -- the Arrow Buffers. The array of buffers has the same length
 -- as the array of payloads.
 encodePayloadsUncompressed ::
-     SmallArray Payload
+     UnliftedArray ByteArray
   -> ( Catenable.Builder
      , SmallArray Buffer
      )
 encodePayloadsUncompressed payloads =
-  let EncodePayloadState{builder=builderZ,buffers=buffersZ} = foldl'
-        (\EncodePayloadState{position,builder,buffers} Payload{payload} ->
+  let EncodePayloadState{builder=builderZ,buffers=buffersZ} = C.foldl'
+        (\EncodePayloadState{position,builder,buffers} payload ->
           let !unpaddedLen = PM.sizeofByteArray payload
               !padding = computePadding64 unpaddedLen
               builder' =
@@ -183,20 +211,20 @@ encodePayloadsUncompressed payloads =
                 , buffers = buffers'
                 }
         ) EncodePayloadState{builder=mempty,position=0,buffers=[]} payloads
-   in (builderZ,C.unsafeFromListReverseN (PM.sizeofSmallArray payloads) buffersZ)
+   in (builderZ, C.unsafeFromListReverseN (sizeofUnliftedArray payloads) buffersZ)
 
 -- Note: Payloads under 64 bytes are never compressed. LZ4 frames have 15 bytes of
 -- overhead, so it is unlikely that the compression would be beneficial. An
 -- LZ4 frame cannot have compressed blocks whose uncompressed contents are
 -- larger than 4MiB, so we also disable compression on these large payloads.
 encodePayloadsLz4 ::
-     SmallArray Payload
+     UnliftedArray ByteArray
   -> ( Catenable.Builder
      , SmallArray Buffer
      )
 encodePayloadsLz4 payloads =
-  let EncodePayloadState{builder=builderZ,buffers=buffersZ} = foldl'
-        (\EncodePayloadState{position,builder,buffers} Payload{payload} ->
+  let EncodePayloadState{builder=builderZ,buffers=buffersZ} = C.foldl'
+        (\EncodePayloadState{position,builder,buffers} payload ->
           let payloadSize = PM.sizeofByteArray payload
            in if payloadSize <= 64 || payloadSize >= 4194304
                 then
@@ -244,7 +272,7 @@ encodePayloadsLz4 payloads =
                         , buffers = buffers'
                         }
         ) EncodePayloadState{builder=mempty,position=0,buffers=[]} payloads
-   in (builderZ,C.unsafeFromListReverseN (PM.sizeofSmallArray payloads) buffersZ)
+   in (builderZ, C.unsafeFromListReverseN (sizeofUnliftedArray payloads) buffersZ)
 
 data EncodePayloadState = EncodePayloadState
   { builder :: !Catenable.Builder
@@ -277,3 +305,20 @@ marshallCompression :: Compression -> Maybe BodyCompression
 marshallCompression = \case
   None -> Nothing
   Lz4 -> Just BodyCompression{codec=Lz4Frame}
+
+payloadsToArray :: Payloads -> UnliftedArray ByteArray
+{-# noinline payloadsToArray #-}
+payloadsToArray p0 = step1 p0 0
+  where
+  step1 :: Payloads -> Int -> UnliftedArray ByteArray
+  step1 PayloadsNil !n = runUnliftedArrayST $ do
+    dst <- newUnliftedArray n (mempty :: ByteArray)
+    let go !ix p = case p of
+          PayloadsNil -> if ix == (-1)
+            then unsafeFreezeUnliftedArray dst
+            else errorWithoutStackTrace "arrow-interchange.payloadsToArray: impl mistake"
+          PayloadsCons p' ps' -> do
+            writeUnliftedArray dst ix p'
+            go (ix - 1) ps'
+    go (n - 1) p0
+  step1 (PayloadsCons _ xs) !acc = step1 xs (acc + 1)

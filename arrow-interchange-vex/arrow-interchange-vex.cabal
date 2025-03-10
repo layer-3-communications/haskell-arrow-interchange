@@ -62,12 +62,7 @@ library instantiations
 library
   import: shared
   exposed-modules:
-    ArrowBuilder
-  reexported-modules:
-    , ArrowBuilderNoColumn
-    , ArrowFile
-    , ArrowMessage
-    , ArrowSchema
+    Arrow.Builder.Vex
   build-depends:
     , base >=4.16
     , arrow-interchange-common
@@ -84,24 +79,6 @@ library
     , bytestring >=0.11.4
   hs-source-dirs: src
   default-language: GHC2021
-
-executable arrow-message-json-to-binary
-  import: shared
-  default-language: GHC2021
-  hs-source-dirs: app
-  main-is: ArrowMessageJsonToBinary.hs
-  build-depends:
-    , arrow-interchange-vex
-    , aeson
-
-executable arrow-footer-json-to-binary
-  import: shared
-  default-language: GHC2021
-  hs-source-dirs: app
-  main-is: ArrowFooterJsonToBinary.hs
-  build-depends:
-    , arrow-interchange-vex
-    , aeson
 
 executable csv-to-arrow
   import: shared

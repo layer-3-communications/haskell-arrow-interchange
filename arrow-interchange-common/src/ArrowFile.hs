@@ -21,14 +21,14 @@ import qualified GHC.Exts as Exts
 import qualified Data.Primitive.ByteArray.LittleEndian as LE
 import qualified ArrowSchema
 
--- The @version@ field is implied.
+-- | The @version@ field is implied.
 data Footer = Footer
   { schema :: !Schema
   , dictionaries :: !(SmallArray Block)
   , recordBatches :: !(SmallArray Block)
   }
 
--- This is a flatbuffers struct
+-- | This is a flatbuffers struct
 data Block = Block
   { offset :: !Int64
   , metaDataLength :: !Int32 -- we pad this when we encode it

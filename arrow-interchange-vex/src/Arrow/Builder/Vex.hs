@@ -7,7 +7,7 @@
 {-# language ScopedTypeVariables #-}
 {-# language OverloadedRecordDot #-}
 
-module ArrowBuilder
+module Arrow.Builder.Vex
   ( Column(..)
   , NamedColumn(..)
   , Contents(..)
@@ -22,20 +22,17 @@ module ArrowBuilder
   , encodeFooterAndEpilogue
   ) where
 
-import ArrowFile
-import ArrowSchema
-import ArrowMessage
+import Arrow.Builder.Raw
 
 import Data.Word
 import Data.Int
 
-import ArrowBuilderNoColumn
-
+import Arithmetic.Types (Fin(Fin))
 import Control.Monad (join)
 import Control.Monad.ST (runST)
 import Data.Primitive (SmallArray,ByteArray(ByteArray))
+import Data.Primitive.Unlifted.Array (UnliftedArray)
 import Data.Text (Text)
-import Arithmetic.Types (Fin(Fin))
 import GHC.TypeNats (type (+))
 
 import qualified Arithmetic.Fin as Fin
@@ -43,15 +40,10 @@ import qualified Arithmetic.Types as Arithmetic
 import qualified Arithmetic.Nat as Nat
 import qualified Arithmetic.Lt as Lt
 import qualified Arithmetic.Lte as Lte
-import qualified Data.List as List
 import qualified Data.Primitive.Contiguous as C
 import qualified Data.Primitive as PM
-import qualified GHC.Exts as Exts
 import qualified Data.Text as T
 import qualified Data.Primitive.Unlifted.Array as PM
-import qualified Data.Bytes.Builder.Bounded as Bounded
-import qualified Data.Bytes as Bytes
-import qualified Data.Bytes.Chunks as Chunks
 import qualified Flatbuffers.Builder as B
 import qualified Data.Builder.Catenable.Bytes as Catenable
 import qualified Vector.Word8.Internal as Word8
@@ -65,7 +57,6 @@ import qualified Vector.Bool.Internal as Bool
 import qualified Vector.ShortText.Internal as ShortText
 import qualified Vector.ShortTexts.Internal as ShortTexts
 import qualified Data.ByteString.Short as SBS
-import qualified Data.ByteString.Short.Internal as SBS
 import qualified Data.Text.Short as TS
 
 data Column n
@@ -107,10 +98,10 @@ flattenNamedColumn !n NamedColumn{contents} = case contents of
 flattenNamedColumns :: Arithmetic.Nat n -> SmallArray (NamedColumn n) -> SmallArray (MaskedColumn n)
 flattenNamedColumns !n !xs = xs >>= flattenNamedColumn n
 
-makePayloads :: Arithmetic.Nat n -> SmallArray (NamedColumn n) -> [Payload]
-makePayloads !n !cols = List.reverse (makePayloadsBackwardsOnto n cols [])
+makePayloads :: Arithmetic.Nat n -> SmallArray (NamedColumn n) -> UnliftedArray ByteArray
+makePayloads !n !cols = payloadsToArray (makePayloadsBackwardsOnto n cols PayloadsNil)
 
-makePayloadsBackwardsOnto :: Arithmetic.Nat n -> SmallArray (NamedColumn n) -> [Payload] -> [Payload]
+makePayloadsBackwardsOnto :: Arithmetic.Nat n -> SmallArray (NamedColumn n) -> Payloads -> Payloads
 makePayloadsBackwardsOnto !n !cols !acc0 = C.foldl'
   (\acc NamedColumn{contents} -> 
     let finishPrimitive !exposedMask !exposed = 
@@ -288,7 +279,7 @@ encodeBatch ::
   -> SmallArray (NamedColumn n)
   -> (Catenable.Builder,Block)
 encodeBatch !n cmpr !namedColumns =
-  let payloads = Exts.fromList (makePayloads n namedColumns) :: SmallArray Payload
+  let payloads = makePayloads n namedColumns :: UnliftedArray ByteArray
       (body,buffers) = case cmpr of
         None -> encodePayloadsUncompressed payloads
         Lz4 -> encodePayloadsLz4 payloads
