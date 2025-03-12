@@ -33,7 +33,7 @@ import Data.Primitive.Unlifted.Array (UnliftedArray)
 import Data.Text (Text)
 import Data.Unlifted (Bool#, pattern True#)
 import Data.Unlifted (PrimArray#(PrimArray#))
-import GHC.Exts (Int32#,Int64#,Word32#,Word16#,Word8#)
+import GHC.Exts (Int32#,Int64#,Word64#,Word32#,Word16#,Word8#)
 import GHC.TypeNats (type (+))
 
 import qualified Arithmetic.Fin as Fin
@@ -51,6 +51,7 @@ import qualified Vector.Int64 as Int64
 import qualified Vector.Word8 as Word8
 import qualified Vector.Word16 as Word16
 import qualified Vector.Word32 as Word32
+import qualified Vector.Word64 as Word64
 
 data Column n
   = PrimitiveInt32
@@ -61,6 +62,8 @@ data Column n
       !(Word16.Vector n Word16#)
   | PrimitiveWord32
       !(Word32.Vector n Word32#)
+  | PrimitiveWord64
+      !(Word64.Vector n Word64#)
   | PrimitiveInt64
       !(Int64.Vector n Int64#)
   | VariableBinaryUtf8 !(VariableBinary n)
@@ -116,6 +119,10 @@ makePayloads !_ !cols = go 0 PayloadsNil
               PrimArray# b ->
                 let b' = ByteArray b
                  in finishPrimitive b'
+            PrimitiveWord64 v -> case Word64.expose v of
+              PrimArray# b ->
+                let b' = ByteArray b
+                 in finishPrimitive b'
             PrimitiveWord8 v -> case Word8.expose v of
               PrimArray# b ->
                 let b' = ByteArray b
@@ -153,6 +160,7 @@ makePayloads !_ !cols = go 0 PayloadsNil
 columnToType :: Column n -> Type
 columnToType = \case
   PrimitiveInt32{} -> Int TableInt{bitWidth=32,isSigned=True}
+  PrimitiveWord64{} -> Int TableInt{bitWidth=64,isSigned=False}
   PrimitiveWord32{} -> Int TableInt{bitWidth=32,isSigned=False}
   PrimitiveWord16{} -> Int TableInt{bitWidth=16,isSigned=False}
   PrimitiveWord8{} -> Int TableInt{bitWidth=8,isSigned=False}

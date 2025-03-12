@@ -29,6 +29,6 @@ library
     , text >=2.0
     , text-short
     , unlifted >=0.2.1
-    , vext
+    , vext >=0.1.1
   hs-source-dirs: src
   default-language: GHC2021
