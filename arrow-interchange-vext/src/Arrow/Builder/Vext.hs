@@ -66,6 +66,8 @@ data Column n
   | VariableBinaryUtf8 !(VariableBinary n)
   | TimestampUtcMillisecond
       !(Int64.Vector n Int64#)
+  | TimestampUtcSecond
+      !(Int64.Vector n Int64#)
   | DurationMillisecond
       !(Int64.Vector n Int64#)
   | Date32
@@ -130,6 +132,10 @@ makePayloads !_ !cols = go 0 PayloadsNil
               PrimArray# b ->
                 let b' = ByteArray b
                  in finishPrimitive b'
+            TimestampUtcSecond v -> case Int64.expose v of
+              PrimArray# b ->
+                let b' = ByteArray b
+                 in finishPrimitive b'
             DurationMillisecond v -> case Int64.expose v of
               PrimArray# b ->
                 let b' = ByteArray b
@@ -153,6 +159,8 @@ columnToType = \case
   PrimitiveInt64{} -> Int TableInt{bitWidth=64,isSigned=True}
   TimestampUtcMillisecond{} ->
     Timestamp TableTimestamp{unit=Millisecond,timezone=T.pack "UTC"}
+  TimestampUtcSecond{} ->
+    Timestamp TableTimestamp{unit=Second,timezone=T.pack "UTC"}
   DurationMillisecond{} -> Duration Millisecond
   Date32{} -> Date (TableDate Day)
   Date64{} -> Date (TableDate DateMillisecond)
