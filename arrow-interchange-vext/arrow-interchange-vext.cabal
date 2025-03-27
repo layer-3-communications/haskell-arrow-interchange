@@ -10,6 +10,8 @@ build-type:         Simple
 
 library
   ghc-options: -Wall -O2
+  other-modules:
+    ArrowParser
   exposed-modules:
     Arrow.Builder.Vext
   build-depends:
@@ -20,8 +22,10 @@ library
     , bytebuild >=0.3.12
     , byteslice >=0.2.9
     , bytestring >=0.11.4
-    , contiguous >=0.6
-    , flatbuffers-builder
+    , contiguous >=0.6.4.2
+    , flatbuffers-builder >=1.0
+    , flatbuffers-parser >=0.1
+    , lz4-bytes >=0.1.2
     , natural-arithmetic >=0.2
     , primitive >=0.8
     , primitive-unlifted >=2.2
@@ -29,6 +33,27 @@ library
     , text >=2.0
     , text-short
     , unlifted >=0.2.1
-    , vext >=0.1.1
+    , vext >=0.1.4
   hs-source-dirs: src
   default-language: GHC2021
+
+test-suite test
+  ghc-options: -Wall -O2
+  default-language: GHC2021
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is: Main.hs
+  build-depends:
+    , base >=4.16 
+    , arrow-interchange-vext
+    , bytesmith >=0.3.9
+    , byteslice >=0.2.9
+    , primitive >=0.7
+    , bytebuild >=0.3.12
+    , bytestring >=0.11
+    , array-builder >=0.1.2
+    , text >=2.0
+    , vext >=0.1.1
+    , contiguous >=0.6
+    , unlifted >=0.2.2
+    , natural-arithmetic

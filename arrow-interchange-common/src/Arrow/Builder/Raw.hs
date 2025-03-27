@@ -16,6 +16,7 @@ module Arrow.Builder.Raw
   , Footer(..)
   , Block(..)
   , encodeFooter
+  , parseFooter
     -- ** Schema
   , Field(..)
   , Type(..)
@@ -44,6 +45,7 @@ module Arrow.Builder.Raw
   , CompressionType(..)
   , BodyCompression(..)
   , encodeMessage
+  , parseMessage
   , encodeRecordBatch
 
     -- * Encoding Helpers
@@ -71,7 +73,7 @@ import ArrowMessage
 
 import Data.Word
 
-import Data.Primitive (SmallArray,ByteArray)
+import Data.Primitive (SmallArray,ByteArray,PrimArray)
 import Data.Primitive.Unlifted.Array (UnliftedArray, sizeofUnliftedArray)
 import Data.Primitive.Unlifted.Array (writeUnliftedArray, unsafeFreezeUnliftedArray, newUnliftedArray)
 import Control.Monad.ST.Run (runUnliftedArrayST)
@@ -87,6 +89,7 @@ import qualified Data.Bytes as Bytes
 import qualified Data.Bytes.Chunks as Chunks
 import qualified Flatbuffers.Builder as B
 import qualified Data.Builder.Catenable.Bytes as Catenable
+import qualified Data.Primitive.Contiguous as Contiguous
 
 data Payloads
   = PayloadsCons !ByteArray !Payloads
@@ -177,6 +180,13 @@ asciiArrow1 = Catenable.bytes (Exts.fromList [0x41 :: Word8,0x52,0x52,0x4f,0x57,
 
 makeFooter :: SmallArray Block -> Schema -> Footer
 makeFooter !blocks !schema = Footer
+  { schema = schema
+  , dictionaries = mempty
+  , recordBatches = Contiguous.convert blocks
+  }
+
+makeFooterPrim :: PrimArray Block -> Schema -> Footer
+makeFooterPrim !blocks !schema = Footer
   { schema = schema
   , dictionaries = mempty
   , recordBatches = blocks
