@@ -40,7 +40,7 @@ import Data.Unlifted (Bool#, pattern True#)
 import Data.Unlifted (PrimArray#(PrimArray#))
 import Data.Maybe.Void (pattern JustVoid#)
 import Data.Word (Word32)
-import GHC.Exts (Int32#,Int64#,Word64#,Word32#,Word16#,Word8#)
+import GHC.Exts (Int8#,Int32#,Int64#,Word64#,Word32#,Word16#,Word8#)
 import GHC.Int (Int64(I64#),Int(I#))
 import GHC.TypeNats (Nat, type (+))
 
@@ -62,12 +62,15 @@ import qualified Vector.Bit as Bit
 import qualified Vector.Int32 as Int32
 import qualified Vector.Int64 as Int64
 import qualified Vector.Word8 as Word8
+import qualified Vector.Int8 as Int8
 import qualified Vector.Word16 as Word16
 import qualified Vector.Word32 as Word32
 import qualified Vector.Word64 as Word64
 
 data Column n
-  = PrimitiveInt32
+  = PrimitiveInt8
+      !(Int8.Vector n Int8#)
+  | PrimitiveInt32
       !(Int32.Vector n Int32#)
   | PrimitiveWord8
       !(Word8.Vector n Word8#)
@@ -351,7 +354,9 @@ decode contents = do
                 _ -> Left ArrowParser.UnsupportedBitWidth
               (trueOffElems, trueContents) <- primitiveColumnExtraction bodyStart bodyEnd contents n bufferCount bufIx field byteWidth batch
               !col <-
-                if | 4 <- byteWidth, True <- isSigned ->
+                if | 1 <- byteWidth, True <- isSigned ->
+                       Right $! NamedColumn field.name defaultValidity (PrimitiveInt8 (Int8.cloneFromByteArray trueOffElems n trueContents))
+                   | 4 <- byteWidth, True <- isSigned ->
                        Right $! NamedColumn field.name defaultValidity (PrimitiveInt32 (Int32.cloneFromByteArray trueOffElems n trueContents))
                    | 8 <- byteWidth, True <- isSigned ->
                        Right $! NamedColumn field.name defaultValidity (PrimitiveInt64 (Int64.cloneFromByteArray trueOffElems n trueContents))
