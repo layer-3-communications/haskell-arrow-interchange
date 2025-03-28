@@ -336,6 +336,12 @@ decode contents = do
         let defaultValidity = Bit.replicate n True#
         (_, finalBldr) <- C.foldlZipWithM'
           (\(bufIx, bldr) node field -> case field.type_ of
+            -- Currently ignoring the time zone. Fix this.
+            Timestamp TableTimestamp{unit=Second} -> do
+              (trueOffElems, trueContents) <- primitiveColumnExtraction bodyStart bodyEnd contents n bufferCount bufIx field 8 batch
+              let !col = NamedColumn field.name defaultValidity (TimestampUtcSecond (Int64.cloneFromByteArray trueOffElems n trueContents))
+              let !bldr' = col : bldr
+              pure (bufIx + 2, bldr')
             Int TableInt{bitWidth,isSigned} -> do
               byteWidth <- case bitWidth of
                 8 -> Right 1
@@ -343,33 +349,7 @@ decode contents = do
                 32 -> Right 4
                 64 -> Right 8
                 _ -> Left ArrowParser.UnsupportedBitWidth
-              when (bufIx + 1 >= bufferCount) $ Left ArrowParser.RanOutOfBuffers
-              -- Skipping the validity bitmap for now. TODO: stop doing that.
-              let buf = PM.indexPrimArray batch.buffers (bufIx + 1)
-              let off = fromIntegral @Int64 @Int buf.offset
-              let len = fromIntegral @Int64 @Int buf.length
-              let !bufDataStartOff = off + bodyStart - 8
-              when (off + len > bodyEnd) $ Left ArrowParser.BatchDataOutOfRange
-              -- Invariants:
-              -- * trueOff is suitably aligned
-              -- * trueLen is nonnegative
-              (trueOff, trueLen, trueContents) <- case batch.compression of
-                Nothing -> do
-                  when (rem off byteWidth /= 0) $ Left (ArrowParser.MisalignedOffsetForIntBatch field.name byteWidth off)
-                  pure (bufDataStartOff, len, contents)
-                Just (BodyCompression Lz4Frame) -> do
-                  when (rem bufDataStartOff 8 /= 0) $ Left ArrowParser.CompressedBufferMisaligned
-                  let (decompressedSize :: Int64) = LE.indexByteArray contents (quot bufDataStartOff 8)
-                  when (decompressedSize >= 0xFFFF_FFFF) $ Left ArrowParser.CannotDecompressToGiganticArray
-                  case compare decompressedSize (-1) of
-                    EQ -> Left ArrowParser.DisabledDecompressionNotSupported
-                    LT -> Left ArrowParser.NegativeDecompressedSize
-                    GT -> do
-                      let decompressedSizeI = fromIntegral decompressedSize :: Int
-                      decompressed <- maybe (Left ArrowParser.Lz4DecompressionFailure) Right (Lz4.Frame.decompressU decompressedSizeI (Bytes contents (bufDataStartOff + 8) (len - 8)))
-                      pure (0, decompressedSizeI, decompressed)
-              when (trueLen < I# (Nat.demote# n) * byteWidth) $ Left (ArrowParser.ColumnByteLengthDisagreesWithBatchLength field.name trueLen (I# (Nat.demote# n)) byteWidth)
-              let !trueOffElems = quot trueOff byteWidth
+              (trueOffElems, trueContents) <- primitiveColumnExtraction bodyStart bodyEnd contents n bufferCount bufIx field byteWidth batch
               !col <-
                 if | 4 <- byteWidth, True <- isSigned ->
                        Right $! NamedColumn field.name defaultValidity (PrimitiveInt32 (Int32.cloneFromByteArray trueOffElems n trueContents))
@@ -389,6 +369,49 @@ decode contents = do
           ) (0 :: Int, []) batch.nodes footer.schema.fields
         pure (NamedColumns n (Exts.fromList (List.reverse finalBldr)))
     _ -> error "whoops, can't handle this stuff yet"
+
+-- Returns a "true offset" and a "true contents". The true contents might be the original array,
+-- or they might be a decompression of an LZ4 block.
+primitiveColumnExtraction ::
+     Int -- body start
+  -> Int -- body end
+  -> ByteArray -- contents
+  -> Nat# n
+  -> Int -- buffer count
+  -> Int -- buffer index
+  -> Field
+  -> Int -- byte width
+  -> RecordBatch
+  -> Either ArrowParser.Error (Int, ByteArray)
+primitiveColumnExtraction !bodyStart !bodyEnd !contents n !bufferCount !bufIx !field !byteWidth !batch = do
+  when (bufIx + 1 >= bufferCount) $ Left ArrowParser.RanOutOfBuffers
+  -- Skipping the validity bitmap for now. TODO: stop doing that.
+  let buf = PM.indexPrimArray batch.buffers (bufIx + 1)
+  let off = fromIntegral @Int64 @Int buf.offset
+  let len = fromIntegral @Int64 @Int buf.length
+  let !bufDataStartOff = off + bodyStart - 8
+  when (off + len > bodyEnd) $ Left ArrowParser.BatchDataOutOfRange
+  -- Invariants:
+  -- * trueOff is suitably aligned
+  -- * trueLen is nonnegative
+  (trueOff, trueLen, trueContents) <- case batch.compression of
+    Nothing -> do
+      when (rem off byteWidth /= 0) $ Left (ArrowParser.MisalignedOffsetForIntBatch field.name byteWidth off)
+      pure (bufDataStartOff, len, contents)
+    Just (BodyCompression Lz4Frame) -> do
+      when (rem bufDataStartOff 8 /= 0) $ Left ArrowParser.CompressedBufferMisaligned
+      let (decompressedSize :: Int64) = LE.indexByteArray contents (quot bufDataStartOff 8)
+      when (decompressedSize >= 0xFFFF_FFFF) $ Left ArrowParser.CannotDecompressToGiganticArray
+      case compare decompressedSize (-1) of
+        EQ -> Left ArrowParser.DisabledDecompressionNotSupported
+        LT -> Left ArrowParser.NegativeDecompressedSize
+        GT -> do
+          let decompressedSizeI = fromIntegral decompressedSize :: Int
+          decompressed <- maybe (Left ArrowParser.Lz4DecompressionFailure) Right (Lz4.Frame.decompressU decompressedSizeI (Bytes contents (bufDataStartOff + 8) (len - 8)))
+          pure (0, decompressedSizeI, decompressed)
+  when (trueLen < I# (Nat.demote# n) * byteWidth) $ Left (ArrowParser.ColumnByteLengthDisagreesWithBatchLength field.name trueLen (I# (Nat.demote# n)) byteWidth)
+  let !trueOffElems = quot trueOff byteWidth
+  Right $! (trueOffElems, trueContents)
 
 i64ToI :: Int64 -> Int
 i64ToI = fromIntegral

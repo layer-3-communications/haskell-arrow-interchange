@@ -225,6 +225,15 @@ encodeType = \case
   Struct -> B.Union{tag=13,object=B.Object mempty}
 
 parseType :: P.UnionParser Type
-parseType = P.constructUnion2
-  (pure Null)
-  (Int <$> (TableInt <$> P.int32 <*> P.boolean))
+parseType = P.constructUnionFromList
+  [ pure Null
+  , Int <$> (TableInt <$> P.int32 <*> P.boolean)
+  , P.tableParserThrow P.UnsupportedUnionTag
+  , P.tableParserThrow P.UnsupportedUnionTag
+  , P.tableParserThrow P.UnsupportedUnionTag
+  , P.tableParserThrow P.UnsupportedUnionTag
+  , P.tableParserThrow P.UnsupportedUnionTag
+  , P.tableParserThrow P.UnsupportedUnionTag
+  , P.tableParserThrow P.UnsupportedUnionTag
+  , Timestamp <$> (TableTimestamp <$> fmap TimeUnit P.word16 <*> P.string)
+  ]
