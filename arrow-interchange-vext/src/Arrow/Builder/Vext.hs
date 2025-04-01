@@ -24,6 +24,8 @@ module Arrow.Builder.Vext
   , encodeBatch
   , encodePreludeAndSchema
   , encodeFooterAndEpilogue
+    -- * Variable Binary Helper
+  , shortTextVectorToVariableBinary
   ) where
 
 import Arrow.Builder.Raw
@@ -37,18 +39,25 @@ import Data.Primitive (SmallArray,ByteArray(ByteArray),PrimArray)
 import Data.Primitive.Unlifted.Array (UnliftedArray)
 import Data.Foldable (foldlM)
 import Data.Text (Text)
-import Data.Unlifted (Bool#, pattern True#)
+import Data.Unlifted (Bool#, pattern True#, ShortText#)
 import Data.Unlifted (PrimArray#(PrimArray#))
 import Data.Maybe.Void (pattern JustVoid#)
 import Data.Maybe (fromMaybe)
 import Data.Word (Word32)
 import GHC.Exts (Int8#,Int16#,Int32#,Int64#,Word64#,Word32#,Word16#,Word8#)
+import GHC.Exts ((+#))
 import GHC.Int (Int64(I64#),Int(I#))
 import GHC.TypeNats (Nat, type (+))
+import Control.Monad.ST (runST)
+import Arithmetic.Types (Fin(Fin))
 
+import qualified Vector.Unlifted.ShortText
+import qualified Data.Text.Short.Unlifted
+import qualified Data.Bytes as Bytes
 import qualified Data.List as List
 import qualified Arithmetic.Fin as Fin
 import qualified Arithmetic.Nat as Nat
+import qualified Arithmetic.Lt as Lt
 import qualified Arithmetic.Types as Arithmetic
 import qualified ArrowParser
 import qualified Data.Builder.Catenable.Bytes as Catenable
@@ -60,6 +69,8 @@ import qualified GHC.Exts as Exts
 import qualified GHC.TypeNats as GHC
 import qualified Lz4.Frame
 import qualified Data.Primitive.ByteArray.LittleEndian as LE
+import qualified Data.Text.Short as TS
+import qualified Data.ByteString.Short as SBS
 import qualified Vector.Bit as Bit
 import qualified Vector.Int32 as Int32
 import qualified Vector.Int64 as Int64
@@ -69,6 +80,7 @@ import qualified Vector.Int16 as Int16
 import qualified Vector.Word16 as Word16
 import qualified Vector.Word32 as Word32
 import qualified Vector.Word64 as Word64
+import qualified Vector.Unlifted as Unlifted
 
 data Column n
   = PrimitiveInt8
@@ -167,6 +179,25 @@ data VariableBinary (n :: GHC.Nat) = forall (m :: GHC.Nat). VariableBinary
   -- last element should be m.
   !(Int32.Vector (n + 1) (Fin32# (m + 1)))
 
+shortTextVectorToVariableBinary :: forall n. Nat# n -> Unlifted.Vector n ShortText# -> VariableBinary n
+shortTextVectorToVariableBinary n texts = runST $ do
+  dst <- Int32.initialized (Nat.succ# n) (Exts.intToInt32# 0# )
+  I# total# <- Fin.ascendM (Nat.lift n) (0 :: Int) $ \fin@(Fin ix lt) !offset@(I# offset#) -> do
+    let val = Unlifted.index texts (Fin.unlift fin)
+    let fin' = Fin ix (Lt.weakenR @1 lt)
+    Int32.write dst (Fin.unlift fin') (Exts.intToInt32# offset#)
+    pure (offset + SBS.length (TS.toShortByteString (Data.Text.Short.Unlifted.lift val)))
+  Int32.write dst
+    (Fin.unlift (Fin (Nat.lift n) (Lt.incrementL @n Lt.zero)))
+    (Exts.intToInt32# total#)
+  dst' <- Int32.unsafeFreeze dst
+  let !concatenation = Vector.Unlifted.ShortText.concat n texts
+  case TS.toShortByteString (Data.Text.Short.Unlifted.lift concatenation) of
+    SBS.SBS arr -> Bytes.withLengthU (ByteArray arr) $ \m contents ->
+      let !m# = Nat.unlift m in
+      case Int32.toFins (Nat.succ# m#) (Nat.succ# n) dst' of
+        Nothing -> errorWithoutStackTrace "shortTextVectorToVariableBinary: implementation mistake"
+        Just fins -> pure (VariableBinary @n contents fins)
 
 data NamedColumn n = NamedColumn
   { name :: !Text
