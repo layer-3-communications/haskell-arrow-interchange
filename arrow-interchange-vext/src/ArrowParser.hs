@@ -55,6 +55,7 @@ data Error
   | UnsupportedBitWidth
   | UnsupportedCombinationOfBitWidthAndSign
   | DecompressionNotSupported
+  | OnlyRecordBatchesAreSupported
   deriving (Show)
 
 extractMetadata :: ByteArray -> Block -> Either Error Message

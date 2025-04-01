@@ -33,14 +33,16 @@ import Data.Int
 import Control.Monad (when)
 import Arithmetic.Types (Fin32#,Nat#,(:=:#))
 import Data.Bytes.Types (ByteArrayN(ByteArrayN),Bytes(Bytes))
-import Data.Primitive (SmallArray,ByteArray(ByteArray))
+import Data.Primitive (SmallArray,ByteArray(ByteArray),PrimArray)
 import Data.Primitive.Unlifted.Array (UnliftedArray)
+import Data.Foldable (foldlM)
 import Data.Text (Text)
 import Data.Unlifted (Bool#, pattern True#)
 import Data.Unlifted (PrimArray#(PrimArray#))
 import Data.Maybe.Void (pattern JustVoid#)
+import Data.Maybe (fromMaybe)
 import Data.Word (Word32)
-import GHC.Exts (Int8#,Int32#,Int64#,Word64#,Word32#,Word16#,Word8#)
+import GHC.Exts (Int8#,Int16#,Int32#,Int64#,Word64#,Word32#,Word16#,Word8#)
 import GHC.Int (Int64(I64#),Int(I#))
 import GHC.TypeNats (Nat, type (+))
 
@@ -63,6 +65,7 @@ import qualified Vector.Int32 as Int32
 import qualified Vector.Int64 as Int64
 import qualified Vector.Word8 as Word8
 import qualified Vector.Int8 as Int8
+import qualified Vector.Int16 as Int16
 import qualified Vector.Word16 as Word16
 import qualified Vector.Word32 as Word32
 import qualified Vector.Word64 as Word64
@@ -70,8 +73,12 @@ import qualified Vector.Word64 as Word64
 data Column n
   = PrimitiveInt8
       !(Int8.Vector n Int8#)
+  | PrimitiveInt16
+      !(Int16.Vector n Int16#)
   | PrimitiveInt32
       !(Int32.Vector n Int32#)
+  | PrimitiveInt64
+      !(Int64.Vector n Int64#)
   | PrimitiveWord8
       !(Word8.Vector n Word8#)
   | PrimitiveWord16
@@ -80,8 +87,6 @@ data Column n
       !(Word32.Vector n Word32#)
   | PrimitiveWord64
       !(Word64.Vector n Word64#)
-  | PrimitiveInt64
-      !(Int64.Vector n Int64#)
   | VariableBinaryUtf8 !(VariableBinary n)
   | TimestampUtcMillisecond
       !(Int64.Vector n Int64#)
@@ -93,6 +98,30 @@ data Column n
       !(Int32.Vector n Int32#)
   | Date64
       !(Int64.Vector n Int64#)
+
+appendColumn :: Nat# n -> Nat# m -> Column n -> Column m -> Maybe (Column (n + m))
+appendColumn n m (PrimitiveInt8 a) (PrimitiveInt8 b) = Just $! PrimitiveInt8 $! Int8.append n m a b
+appendColumn _ _ (PrimitiveInt8 _) _ = Nothing
+appendColumn n m (PrimitiveInt16 a) (PrimitiveInt16 b) = Just $! PrimitiveInt16 $! Int16.append n m a b
+appendColumn _ _ (PrimitiveInt16 _) _ = Nothing
+appendColumn n m (PrimitiveInt32 a) (PrimitiveInt32 b) = Just $! PrimitiveInt32 $! Int32.append n m a b
+appendColumn _ _ (PrimitiveInt32 _) _ = Nothing
+appendColumn n m (PrimitiveInt64 a) (PrimitiveInt64 b) = Just $! PrimitiveInt64 $! Int64.append n m a b
+appendColumn _ _ (PrimitiveInt64 _) _ = Nothing
+appendColumn n m (PrimitiveWord8 a) (PrimitiveWord8 b) = Just $! PrimitiveWord8 $! Word8.append n m a b
+appendColumn _ _ (PrimitiveWord8 _) _ = Nothing
+appendColumn n m (PrimitiveWord16 a) (PrimitiveWord16 b) = Just $! PrimitiveWord16 $! Word16.append n m a b
+appendColumn _ _ (PrimitiveWord16 _) _ = Nothing
+appendColumn n m (PrimitiveWord32 a) (PrimitiveWord32 b) = Just $! PrimitiveWord32 $! Word32.append n m a b
+appendColumn _ _ (PrimitiveWord32 _) _ = Nothing
+appendColumn n m (PrimitiveWord64 a) (PrimitiveWord64 b) = Just $! PrimitiveWord64 $! Word64.append n m a b
+appendColumn _ _ (PrimitiveWord64 _) _ = Nothing
+appendColumn n m (TimestampUtcSecond a) (TimestampUtcSecond b) = Just $! TimestampUtcSecond $! Int64.append n m a b
+appendColumn _ _ (TimestampUtcSecond _) _ = Nothing
+appendColumn n m (TimestampUtcMillisecond a) (TimestampUtcMillisecond b) = Just $! TimestampUtcMillisecond $! Int64.append n m a b
+appendColumn _ _ (TimestampUtcMillisecond _) _ = Nothing
+appendColumn n m (Date64 a) (Date64 b) = Just $! Date64 $! Int64.append n m a b
+appendColumn _ _ (Date64 _) _ = Nothing
 
 showColumn :: Arithmetic.Nat# n -> Column n -> String
 showColumn n (PrimitiveInt32 x) = Int32.show n x
@@ -121,6 +150,8 @@ eqNamedColumn n eq x y =
 eqColumn :: Nat# n -> m :=:# n -> Column n -> Column m -> Bool
 {-# noinline eqColumn #-}
 eqColumn n eq x y = go x y where
+  go (PrimitiveInt8 a) (PrimitiveInt8 b) = Int8.equals n a (Int8.substitute eq b)
+  go (PrimitiveInt16 a) (PrimitiveInt16 b) = Int16.equals n a (Int16.substitute eq b)
   go (PrimitiveInt32 a) (PrimitiveInt32 b) = Int32.equals n a (Int32.substitute eq b)
   go (PrimitiveInt64 a) (PrimitiveInt64 b) = Int64.equals n a (Int64.substitute eq b)
   go (PrimitiveWord64 a) (PrimitiveWord64 b) = Word64.equals n a (Word64.substitute eq b)
@@ -312,97 +343,153 @@ instance Eq NamedColumns where
       C.foldrZipWith (\a b acc -> eqNamedColumn szA eq a b && acc) True columnsA columnsB
     _ -> False
 
+makeEmptyNamedColumns :: Schema -> Either ArrowParser.Error NamedColumns
+makeEmptyNamedColumns schema = do
+  let emptyValidity = Bit.empty
+  finalBldr <- C.foldlM'
+    (\bldr field -> case field.type_ of
+      Timestamp TableTimestamp{unit=Second} -> do
+        let !col = NamedColumn field.name emptyValidity (TimestampUtcSecond Int64.empty)
+        let !bldr' = col : bldr
+        pure bldr'
+      Int TableInt{bitWidth,isSigned} -> do
+        !col <-
+          if | 8 <- bitWidth, True <- isSigned ->
+                 Right $! NamedColumn field.name emptyValidity (PrimitiveInt8 Int8.empty)
+             | 32 <- bitWidth, True <- isSigned ->
+                 Right $! NamedColumn field.name emptyValidity (PrimitiveInt32 Int32.empty)
+             | 64 <- bitWidth, True <- isSigned ->
+                 Right $! NamedColumn field.name emptyValidity (PrimitiveInt64 Int64.empty)
+             | 8 <- bitWidth, False <- isSigned ->
+                 Right $! NamedColumn field.name emptyValidity (PrimitiveWord8 Word8.empty)
+             | 16 <- bitWidth, False <- isSigned ->
+                 Right $! NamedColumn field.name emptyValidity (PrimitiveWord16 Word16.empty)
+             | 32 <- bitWidth, False <- isSigned ->
+                 Right $! NamedColumn field.name emptyValidity (PrimitiveWord32 Word32.empty)
+             | 64 <- bitWidth, False <- isSigned ->
+                 Right $! NamedColumn field.name emptyValidity (PrimitiveWord64 Word64.empty)
+             | otherwise -> Left ArrowParser.UnsupportedCombinationOfBitWidthAndSign
+        let !bldr' = col : bldr
+        pure bldr'
+    ) [] schema.fields
+  pure (NamedColumns Nat.N0# (Exts.fromList (List.reverse finalBldr)))
+
 -- | Decode a single batch of records
 decode :: ByteArray -> Either ArrowParser.Error NamedColumns
 decode contents = do
   footer <- ArrowParser.decodeFooterFromArrowContents contents
   let batches = footer.recordBatches
+  case footer.schema.endianness of
+    0 -> pure ()
+    _ -> Left ArrowParser.BigEndianBuffersNotSupported
   case PM.sizeofPrimArray batches of
-    0 -> do
-      let emptyValidity = Bit.empty
-      finalBldr <- C.foldlM'
-        (\bldr field -> case field.type_ of
-          Timestamp TableTimestamp{unit=Second} -> do
-            let !col = NamedColumn field.name emptyValidity (TimestampUtcSecond Int64.empty)
-            let !bldr' = col : bldr
-            pure bldr'
-          Int TableInt{bitWidth,isSigned} -> do
-            !col <-
-              if | 8 <- bitWidth, True <- isSigned ->
-                     Right $! NamedColumn field.name emptyValidity (PrimitiveInt8 Int8.empty)
-                 | 32 <- bitWidth, True <- isSigned ->
-                     Right $! NamedColumn field.name emptyValidity (PrimitiveInt32 Int32.empty)
-                 | 64 <- bitWidth, True <- isSigned ->
-                     Right $! NamedColumn field.name emptyValidity (PrimitiveInt64 Int64.empty)
-                 | 8 <- bitWidth, False <- isSigned ->
-                     Right $! NamedColumn field.name emptyValidity (PrimitiveWord8 Word8.empty)
-                 | 16 <- bitWidth, False <- isSigned ->
-                     Right $! NamedColumn field.name emptyValidity (PrimitiveWord16 Word16.empty)
-                 | 32 <- bitWidth, False <- isSigned ->
-                     Right $! NamedColumn field.name emptyValidity (PrimitiveWord32 Word32.empty)
-                 | 64 <- bitWidth, False <- isSigned ->
-                     Right $! NamedColumn field.name emptyValidity (PrimitiveWord64 Word64.empty)
-                 | otherwise -> Left ArrowParser.UnsupportedCombinationOfBitWidthAndSign
-            let !bldr' = col : bldr
-            pure bldr'
-        ) [] footer.schema.fields
-      pure (NamedColumns Nat.N0# (Exts.fromList (List.reverse finalBldr)))
+    0 -> makeEmptyNamedColumns footer.schema
     1 -> do
       let !block0 = PM.indexPrimArray batches 0
-      let !bodyStart = roundUp8 (i64ToI block0.offset + 8 + i32ToI block0.metaDataLength)
-      let !bodyEnd = bodyStart + i64ToI block0.bodyLength
-      case footer.schema.endianness of
-        0 -> pure ()
-        _ -> Left ArrowParser.BigEndianBuffersNotSupported
-      -- TODO: check that body end is actually in bounds
-      metadata <- ArrowParser.extractMetadata contents block0
+      handleOneBlock contents footer block0
+    _ -> handleManyBlocks contents footer batches
+
+data BodyBounds = BodyBounds
+  { bodyStart :: !Int 
+  , bodyEnd :: !Int 
+  }
+
+computeBodyBounds :: Block -> BodyBounds
+computeBodyBounds block =
+  let !bodyStart = roundUp8 (i64ToI block.offset + 8 + i32ToI block.metaDataLength)
+      !bodyEnd = bodyStart + i64ToI block.bodyLength
+   in BodyBounds{bodyStart,bodyEnd}
+
+handleManyBlocks :: ByteArray -> Footer -> PrimArray Block -> Either ArrowParser.Error NamedColumns
+handleManyBlocks !contents footer blocks = do
+  pairs :: SmallArray (Block,RecordBatch) <- C.traverse
+    (\block -> do
+      metadata <- ArrowParser.extractMetadata contents block
       case metadata.header of
-        MessageHeaderRecordBatch batch -> do
-          -- Note: the batch length is the number of elements, not bytes
-          when (batch.length < 0) (Left ArrowParser.NegativeBatchLength)
-          when (PM.sizeofPrimArray batch.nodes /= PM.sizeofSmallArray footer.schema.fields) (Left ArrowParser.SchemaFieldCountDoesNotMatchNodeCount)
-          let !bufferCount = PM.sizeofPrimArray batch.buffers
-          -- Left (ArrowParser.Placeholder (show metadata))
-          Nat.with# (case batch.length of {I64# i -> Exts.int64ToInt# i}) $ \n -> do
-            let defaultValidity = Bit.replicate n True#
-            (_, finalBldr) <- C.foldlZipWithM'
-              (\(bufIx, bldr) node field -> case field.type_ of
-                -- Currently ignoring the time zone. Fix this.
-                Timestamp TableTimestamp{unit=Second} -> do
-                  (trueOffElems, trueContents) <- primitiveColumnExtraction bodyStart bodyEnd contents n bufferCount bufIx field 8 batch
-                  let !col = NamedColumn field.name defaultValidity (TimestampUtcSecond (Int64.cloneFromByteArray trueOffElems n trueContents))
-                  let !bldr' = col : bldr
-                  pure (bufIx + 2, bldr')
-                Int TableInt{bitWidth,isSigned} -> do
-                  byteWidth <- case bitWidth of
-                    8 -> Right 1
-                    16 -> Right 2
-                    32 -> Right 4
-                    64 -> Right 8
-                    _ -> Left ArrowParser.UnsupportedBitWidth
-                  (trueOffElems, trueContents) <- primitiveColumnExtraction bodyStart bodyEnd contents n bufferCount bufIx field byteWidth batch
-                  !col <-
-                    if | 1 <- byteWidth, True <- isSigned ->
-                           Right $! NamedColumn field.name defaultValidity (PrimitiveInt8 (Int8.cloneFromByteArray trueOffElems n trueContents))
-                       | 4 <- byteWidth, True <- isSigned ->
-                           Right $! NamedColumn field.name defaultValidity (PrimitiveInt32 (Int32.cloneFromByteArray trueOffElems n trueContents))
-                       | 8 <- byteWidth, True <- isSigned ->
-                           Right $! NamedColumn field.name defaultValidity (PrimitiveInt64 (Int64.cloneFromByteArray trueOffElems n trueContents))
-                       | 1 <- byteWidth, False <- isSigned ->
-                           Right $! NamedColumn field.name defaultValidity (PrimitiveWord8 (Word8.cloneFromByteArray trueOffElems n trueContents))
-                       | 2 <- byteWidth, False <- isSigned ->
-                           Right $! NamedColumn field.name defaultValidity (PrimitiveWord16 (Word16.cloneFromByteArray trueOffElems n trueContents))
-                       | 4 <- byteWidth, False <- isSigned ->
-                           Right $! NamedColumn field.name defaultValidity (PrimitiveWord32 (Word32.cloneFromByteArray trueOffElems n trueContents))
-                       | 8 <- byteWidth, False <- isSigned ->
-                           Right $! NamedColumn field.name defaultValidity (PrimitiveWord64 (Word64.cloneFromByteArray trueOffElems n trueContents))
-                       | otherwise -> Left ArrowParser.UnsupportedCombinationOfBitWidthAndSign
-                  let !bldr' = col : bldr
-                  pure (bufIx + 2, bldr')
-              ) (0 :: Int, []) batch.nodes footer.schema.fields
-            pure (NamedColumns n (Exts.fromList (List.reverse finalBldr)))
-        _ -> error "whoops, can't handle this stuff yet"
-    _ -> Left ArrowParser.MoreThanOneBatch
+        MessageHeaderRecordBatch batch -> pure (block, batch)
+        _ -> Left ArrowParser.OnlyRecordBatchesAreSupported
+    ) blocks
+  -- totalElemLen <- C.foldlM'
+  --   (\acc batch -> do
+  --     let !len = batch.length
+  --     when (len < 0) (Left ArrowParser.NegativeBatchLength)
+  --     pure (acc + fromIntegral len)
+  --   ) (0 :: Int) batches
+  namedColsList <- traverse (\(block,batch) -> handleOneBatch contents footer block batch) pairs
+  case Exts.toList namedColsList of
+    [] -> makeEmptyNamedColumns footer.schema
+    nc0 : ncs -> do
+      foldlM
+        (\acc nc -> case acc of
+          NamedColumns accSize accColumns -> case nc of
+            NamedColumns ncSize ncColumns -> do
+              let resultColumns = C.zipWith
+                    (\NamedColumn{name,mask=accMask,column=accCol} NamedColumn{mask=ncMask,column=ncCol} -> NamedColumn
+                      { name
+                      , mask = Bit.append accSize ncSize accMask ncMask
+                      , column = fromMaybe (error "handleManyBlocks: column type mismatch") (appendColumn accSize ncSize accCol ncCol)
+                      }
+                    ) accColumns ncColumns
+              pure (NamedColumns (Nat.plus# accSize ncSize) resultColumns)
+        ) nc0 ncs
+
+handleOneBlock :: ByteArray -> Footer -> Block -> Either ArrowParser.Error NamedColumns
+handleOneBlock !contents footer block = do
+  -- TODO: check that body end is actually in bounds
+  metadata <- ArrowParser.extractMetadata contents block
+  batch <- case metadata.header of
+    MessageHeaderRecordBatch batch -> pure batch
+    _ -> Left ArrowParser.OnlyRecordBatchesAreSupported
+  handleOneBatch contents footer block batch
+
+handleOneBatch :: ByteArray -> Footer -> Block -> RecordBatch -> Either ArrowParser.Error NamedColumns
+handleOneBatch !contents footer block batch = do
+  let BodyBounds{bodyStart,bodyEnd} = computeBodyBounds block
+  -- Note: the batch length is the number of elements, not bytes
+  when (batch.length < 0) (Left ArrowParser.NegativeBatchLength)
+  when (PM.sizeofPrimArray batch.nodes /= PM.sizeofSmallArray footer.schema.fields) (Left ArrowParser.SchemaFieldCountDoesNotMatchNodeCount)
+  let !bufferCount = PM.sizeofPrimArray batch.buffers
+  -- Left (ArrowParser.Placeholder (show metadata))
+  Nat.with# (case batch.length of {I64# i -> Exts.int64ToInt# i}) $ \n -> do
+    let defaultValidity = Bit.replicate n True#
+    (_, finalBldr) <- C.foldlZipWithM'
+      (\(bufIx, bldr) node field -> case field.type_ of
+        -- We do not need to use node unless we support Arrow lists
+        -- Currently ignoring the time zone. Fix this.
+        Timestamp TableTimestamp{unit=Second} -> do
+          (trueOffElems, trueContents) <- primitiveColumnExtraction bodyStart bodyEnd contents n bufferCount bufIx field 8 batch
+          let !col = NamedColumn field.name defaultValidity (TimestampUtcSecond (Int64.cloneFromByteArray trueOffElems n trueContents))
+          let !bldr' = col : bldr
+          pure (bufIx + 2, bldr')
+        Int TableInt{bitWidth,isSigned} -> do
+          byteWidth <- case bitWidth of
+            8 -> Right 1
+            16 -> Right 2
+            32 -> Right 4
+            64 -> Right 8
+            _ -> Left ArrowParser.UnsupportedBitWidth
+          (trueOffElems, trueContents) <- primitiveColumnExtraction bodyStart bodyEnd contents n bufferCount bufIx field byteWidth batch
+          !col <-
+            if | 1 <- byteWidth, True <- isSigned ->
+                   Right $! NamedColumn field.name defaultValidity (PrimitiveInt8 (Int8.cloneFromByteArray trueOffElems n trueContents))
+               | 4 <- byteWidth, True <- isSigned ->
+                   Right $! NamedColumn field.name defaultValidity (PrimitiveInt32 (Int32.cloneFromByteArray trueOffElems n trueContents))
+               | 8 <- byteWidth, True <- isSigned ->
+                   Right $! NamedColumn field.name defaultValidity (PrimitiveInt64 (Int64.cloneFromByteArray trueOffElems n trueContents))
+               | 1 <- byteWidth, False <- isSigned ->
+                   Right $! NamedColumn field.name defaultValidity (PrimitiveWord8 (Word8.cloneFromByteArray trueOffElems n trueContents))
+               | 2 <- byteWidth, False <- isSigned ->
+                   Right $! NamedColumn field.name defaultValidity (PrimitiveWord16 (Word16.cloneFromByteArray trueOffElems n trueContents))
+               | 4 <- byteWidth, False <- isSigned ->
+                   Right $! NamedColumn field.name defaultValidity (PrimitiveWord32 (Word32.cloneFromByteArray trueOffElems n trueContents))
+               | 8 <- byteWidth, False <- isSigned ->
+                   Right $! NamedColumn field.name defaultValidity (PrimitiveWord64 (Word64.cloneFromByteArray trueOffElems n trueContents))
+               | otherwise -> Left ArrowParser.UnsupportedCombinationOfBitWidthAndSign
+          let !bldr' = col : bldr
+          pure (bufIx + 2, bldr')
+      ) (0 :: Int, []) batch.nodes footer.schema.fields
+    pure (NamedColumns n (Exts.fromList (List.reverse finalBldr)))
+
 
 -- Returns a "true offset" and a "true contents". The true contents might be the original array,
 -- or they might be a decompression of an LZ4 block.
