@@ -230,7 +230,7 @@ parseType = P.constructUnionFromList
   , Int <$> (TableInt <$> P.int32 <*> P.boolean)
   , P.tableParserThrow P.UnsupportedUnionTag
   , P.tableParserThrow P.UnsupportedUnionTag
-  , P.tableParserThrow P.UnsupportedUnionTag
+  , pure Utf8
   , P.tableParserThrow P.UnsupportedUnionTag
   , P.tableParserThrow P.UnsupportedUnionTag
   , P.tableParserThrow P.UnsupportedUnionTag
