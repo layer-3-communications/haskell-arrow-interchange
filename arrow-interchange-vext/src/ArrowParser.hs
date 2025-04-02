@@ -48,7 +48,7 @@ data Error
   | MisalignedByteLengthFor32BitIntBatch
   | BatchDataOutOfRange
   | RanOutOfBuffers
-  | MisalignedOffsetForIntBatch !Text !Int !Int
+  | MisalignedOffsetForIntBatch !Int !Int
   | SchemaFieldCountDoesNotMatchNodeCount
   | BigEndianBuffersNotSupported
   | I32ColumnStartsMisaligned
@@ -56,6 +56,7 @@ data Error
   | UnsupportedCombinationOfBitWidthAndSign
   | DecompressionNotSupported
   | OnlyRecordBatchesAreSupported
+  | VariableBinaryIndicesBad
   deriving (Show)
 
 extractMetadata :: ByteArray -> Block -> Either Error Message

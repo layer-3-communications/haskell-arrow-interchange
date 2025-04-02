@@ -47,9 +47,15 @@ main = do
       IO.hPutStrLn IO.stderr (Word16.show size ports)
       fail "Exiting"
   when (selector == "ALL" || selector == "traffic-01") $ do
-    NamedColumns{size, columns} <- testFile "Clickhouse Traffic 01 Dump" "examples/traffic-01.arrow"
+    NamedColumns{columns} <- testFile "Clickhouse Traffic 01 Dump" "examples/traffic-01.arrow"
     PrimitiveWord32 _ <- findColumnOrFail "source_ip" columns
     PrimitiveWord16 _ <- findColumnOrFail "destination_port" columns
+    pure ()
+  when (selector == "ALL" || selector == "traffic-02") $ do
+    NamedColumns{columns} <- testFile "Clickhouse Traffic 02 Dump" "examples/traffic-02.arrow"
+    PrimitiveWord32 _ <- findColumnOrFail "source_ip" columns
+    PrimitiveWord16 _ <- findColumnOrFail "destination_port" columns
+    VariableBinaryUtf8 _ <- findColumnOrFail "application" columns
     pure ()
   IO.hPutStrLn IO.stderr "All tests succeeded"
 

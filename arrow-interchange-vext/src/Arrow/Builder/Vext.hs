@@ -143,8 +143,9 @@ showColumn n (PrimitiveWord16 x) = Word16.show n x
 showColumn n (PrimitiveWord32 x) = Word32.show n x
 showColumn n (PrimitiveWord64 x) = Word64.show n x
 
+-- Only used by the test suite
 showNamedColumn :: Nat# n -> NamedColumn n -> String
-showNamedColumn n (NamedColumn name mask column) = "NamedColumn " ++ show name ++ " " ++ "???" ++ " " ++ showColumn n column
+showNamedColumn n (NamedColumn name _ column) = "NamedColumn " ++ show name ++ " " ++ "???" ++ " " ++ showColumn n column
 
 instance Show NamedColumns where
   show (NamedColumns n xs) = "NamedColumn " ++ show (I# (Nat.demote# n)) ++ " [" ++ strs ++ "]"
@@ -224,6 +225,14 @@ makePayloads !_ !cols = go 0 PayloadsNil
                     (ByteArray (case Int32.expose szs of PrimArray# x -> x))
                     acc
                in go (ix + 1) acc'
+            PrimitiveInt8 v -> case Int8.expose v of
+              PrimArray# b ->
+                let b' = ByteArray b
+                 in finishPrimitive b'
+            PrimitiveInt16 v -> case Int16.expose v of
+              PrimArray# b ->
+                let b' = ByteArray b
+                 in finishPrimitive b'
             PrimitiveInt32 v -> case Int32.expose v of
               PrimArray# b ->
                 let b' = ByteArray b
@@ -420,6 +429,8 @@ decode contents = do
       handleOneBlock contents footer block0
     _ -> handleManyBlocks contents footer batches
 
+-- Both of these values are relative to the beginning of the record batch. They
+-- are not absolute positions in the file.
 data BodyBounds = BodyBounds
   { bodyStart :: !Int 
   , bodyEnd :: !Int 
@@ -475,7 +486,7 @@ handleOneBlock !contents footer block = do
 
 handleOneBatch :: ByteArray -> Footer -> Block -> RecordBatch -> Either ArrowParser.Error NamedColumns
 handleOneBatch !contents footer block batch = do
-  let BodyBounds{bodyStart,bodyEnd} = computeBodyBounds block
+  let bodyBounds@BodyBounds{bodyStart,bodyEnd} = computeBodyBounds block
   -- Note: the batch length is the number of elements, not bytes
   when (batch.length < 0) (Left ArrowParser.NegativeBatchLength)
   when (PM.sizeofPrimArray batch.nodes /= PM.sizeofSmallArray footer.schema.fields) (Left ArrowParser.SchemaFieldCountDoesNotMatchNodeCount)
@@ -484,11 +495,11 @@ handleOneBatch !contents footer block batch = do
   Nat.with# (case batch.length of {I64# i -> Exts.int64ToInt# i}) $ \n -> do
     let defaultValidity = Bit.replicate n True#
     (_, finalBldr) <- C.foldlZipWithM'
-      (\(bufIx, bldr) node field -> case field.type_ of
+      (\(bufIx, bldr) _ field -> case field.type_ of
         -- We do not need to use node unless we support Arrow lists
         -- Currently ignoring the time zone. Fix this.
         Timestamp TableTimestamp{unit=Second} -> do
-          (trueOffElems, trueContents) <- primitiveColumnExtraction bodyStart bodyEnd contents n bufferCount bufIx field 8 batch
+          (trueOffElems, trueContents) <- primitiveColumnExtraction bodyBounds contents n bufferCount bufIx field 8 batch
           let !col = NamedColumn field.name defaultValidity (TimestampUtcSecond (Int64.cloneFromByteArray trueOffElems n trueContents))
           let !bldr' = col : bldr
           pure (bufIx + 2, bldr')
@@ -499,7 +510,7 @@ handleOneBatch !contents footer block batch = do
             32 -> Right 4
             64 -> Right 8
             _ -> Left ArrowParser.UnsupportedBitWidth
-          (trueOffElems, trueContents) <- primitiveColumnExtraction bodyStart bodyEnd contents n bufferCount bufIx field byteWidth batch
+          (trueOffElems, trueContents) <- primitiveColumnExtraction bodyBounds contents n bufferCount bufIx field byteWidth batch
           !col <-
             if | 1 <- byteWidth, True <- isSigned ->
                    Right $! NamedColumn field.name defaultValidity (PrimitiveInt8 (Int8.cloneFromByteArray trueOffElems n trueContents))
@@ -518,6 +529,30 @@ handleOneBatch !contents footer block batch = do
                | otherwise -> Left ArrowParser.UnsupportedCombinationOfBitWidthAndSign
           let !bldr' = col : bldr
           pure (bufIx + 2, bldr')
+        Utf8 -> do
+          when (bufIx + 2 >= bufferCount) $ Left ArrowParser.RanOutOfBuffers
+          -- Skipping the validity bitmap for now. TODO: stop doing that.
+          let bufOffsets = PM.indexPrimArray batch.buffers (bufIx + 1)
+          let bufData = PM.indexPrimArray batch.buffers (bufIx + 2)
+          let dataStart = fromIntegral @Int64 @Int bufData.offset + (bodyStart - 8)
+          let dataLen = fromIntegral @Int64 @Int bufData.length
+          when (dataStart + dataLen > bodyEnd) $ Left ArrowParser.BatchDataOutOfRange
+          let offsetArrayStart = fromIntegral @Int64 @Int bufOffsets.offset + (bodyStart - 8)
+          let offsetArrayLen = fromIntegral @Int64 @Int bufOffsets.length
+          when (offsetArrayStart + offsetArrayLen > bodyEnd) $ Left ArrowParser.BatchDataOutOfRange
+          (dataOffTrue, dataLenTrue, dataContents) <- decompressBufferIfNeeded batch.compression contents bodyBounds bufData
+          (offsOffTrue, offsLenTrue, offsContents) <- decompressBufferIfNeeded batch.compression contents bodyBounds bufOffsets
+          when (rem offsOffTrue 4 /= 0) $ Left (ArrowParser.MisalignedOffsetForIntBatch 4 offsOffTrue)
+          when (offsLenTrue < (1 + I# (Nat.demote# n)) * 4) $ Left (ArrowParser.ColumnByteLengthDisagreesWithBatchLength field.name offsLenTrue (1 + (I# (Nat.demote# n))) 4)
+          let dataContents' = if dataOffTrue == 0 && PM.sizeofByteArray dataContents == dataLenTrue
+                then dataContents
+                else Bytes.toByteArrayClone (Bytes dataContents dataOffTrue dataLenTrue)
+          Bytes.withLengthU dataContents' $ \m dataContentsLenIxed -> case Int32.toFins (Nat.succ# (Nat.unlift m)) (Nat.succ# n) (Int32.cloneFromByteArray (quot offsOffTrue 4) (Nat.succ# n) offsContents) of
+            Nothing -> Left ArrowParser.VariableBinaryIndicesBad
+            Just ixs -> do
+              let !col = NamedColumn field.name defaultValidity (VariableBinaryUtf8 (VariableBinary dataContentsLenIxed ixs))
+              let !bldr' = col : bldr
+              pure (bufIx + 3, bldr')
       ) (0 :: Int, []) batch.nodes footer.schema.fields
     pure (NamedColumns n (Exts.fromList (List.reverse finalBldr)))
 
@@ -525,8 +560,7 @@ handleOneBatch !contents footer block batch = do
 -- Returns a "true offset" and a "true contents". The true contents might be the original array,
 -- or they might be a decompression of an LZ4 block.
 primitiveColumnExtraction ::
-     Int -- body start
-  -> Int -- body end
+     BodyBounds
   -> ByteArray -- contents
   -> Nat# n
   -> Int -- buffer count
@@ -535,20 +569,32 @@ primitiveColumnExtraction ::
   -> Int -- byte width
   -> RecordBatch
   -> Either ArrowParser.Error (Int, ByteArray)
-primitiveColumnExtraction !bodyStart !bodyEnd !contents n !bufferCount !bufIx !field !byteWidth !batch = do
+primitiveColumnExtraction bodyBounds@BodyBounds{bodyEnd} !contents n !bufferCount !bufIx !field !byteWidth !batch = do
   when (bufIx + 1 >= bufferCount) $ Left ArrowParser.RanOutOfBuffers
   -- Skipping the validity bitmap for now. TODO: stop doing that.
   let buf = PM.indexPrimArray batch.buffers (bufIx + 1)
   let off = fromIntegral @Int64 @Int buf.offset
   let len = fromIntegral @Int64 @Int buf.length
-  let !bufDataStartOff = off + bodyStart - 8
   when (off + len > bodyEnd) $ Left ArrowParser.BatchDataOutOfRange
   -- Invariants:
   -- * trueOff is suitably aligned
   -- * trueLen is nonnegative
-  (trueOff, trueLen, trueContents) <- case batch.compression of
+  (trueOff, trueLen, trueContents) <- decompressBufferIfNeeded batch.compression contents bodyBounds buf
+  when (rem trueOff byteWidth /= 0) $ Left (ArrowParser.MisalignedOffsetForIntBatch byteWidth trueOff)
+  when (trueLen < I# (Nat.demote# n) * byteWidth) $ Left (ArrowParser.ColumnByteLengthDisagreesWithBatchLength field.name trueLen (I# (Nat.demote# n)) byteWidth)
+  let !trueOffElems = quot trueOff byteWidth
+  Right $! (trueOffElems, trueContents)
+
+-- Return values: true offset, true length, buffer that offset and len apply to.
+-- Return the true offset to the beginning of the decompressed buffer, in bytes.
+decompressBufferIfNeeded :: Maybe BodyCompression -> ByteArray -> BodyBounds -> Buffer -> Either ArrowParser.Error (Int, Int, ByteArray)
+decompressBufferIfNeeded mc !contents BodyBounds{bodyStart,bodyEnd} buf = do
+  let off = fromIntegral @Int64 @Int buf.offset
+  let len = fromIntegral @Int64 @Int buf.length
+  let !bufDataStartOff = off + bodyStart - 8
+  when (off + len > bodyEnd) $ Left ArrowParser.BatchDataOutOfRange
+  case mc of
     Nothing -> do
-      when (rem off byteWidth /= 0) $ Left (ArrowParser.MisalignedOffsetForIntBatch field.name byteWidth off)
       pure (bufDataStartOff, len, contents)
     Just (BodyCompression Lz4Frame) -> do
       when (rem bufDataStartOff 8 /= 0) $ Left ArrowParser.CompressedBufferMisaligned
@@ -561,9 +607,6 @@ primitiveColumnExtraction !bodyStart !bodyEnd !contents n !bufferCount !bufIx !f
           let decompressedSizeI = fromIntegral decompressedSize :: Int
           decompressed <- maybe (Left ArrowParser.Lz4DecompressionFailure) Right (Lz4.Frame.decompressU decompressedSizeI (Bytes contents (bufDataStartOff + 8) (len - 8)))
           pure (0, decompressedSizeI, decompressed)
-  when (trueLen < I# (Nat.demote# n) * byteWidth) $ Left (ArrowParser.ColumnByteLengthDisagreesWithBatchLength field.name trueLen (I# (Nat.demote# n)) byteWidth)
-  let !trueOffElems = quot trueOff byteWidth
-  Right $! (trueOffElems, trueContents)
 
 i64ToI :: Int64 -> Int
 i64ToI = fromIntegral
