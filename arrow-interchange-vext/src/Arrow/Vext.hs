@@ -9,7 +9,7 @@
 {-# language OverloadedRecordDot #-}
 {-# language PatternSynonyms #-}
 
-module Arrow.Builder.Vext
+module Arrow.Vext
   ( Column(..)
   , VariableBinary(..)
   , NamedColumn(..)

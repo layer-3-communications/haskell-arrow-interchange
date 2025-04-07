@@ -13,7 +13,8 @@ library
   other-modules:
     ArrowParser
   exposed-modules:
-    Arrow.Builder.Vext
+    Arrow.Vext
+    Arrow.Vext.VariableBinaryUtf8
   build-depends:
     , array-builder
     , arrow-interchange-common
@@ -26,7 +27,7 @@ library
     , flatbuffers-builder >=1.0
     , flatbuffers-parser >=0.1.0.1
     , lz4-bytes >=0.1.2
-    , natural-arithmetic >=0.2
+    , natural-arithmetic >=0.2.2
     , primitive >=0.8
     , primitive-unlifted >=2.2
     , run-st >=0.1.1

@@ -2,8 +2,8 @@
 {-# language OverloadedStrings #-}
 {-# language PatternSynonyms #-}
 
-import Arrow.Builder.Vext (NamedColumns(..), NamedColumn(..), Column(..), encodeNamedColumns, decode)
-import Arrow.Builder.Vext (Compression(Lz4, None))
+import Arrow.Vext (NamedColumns(..), NamedColumn(..), Column(..), encodeNamedColumns, decode)
+import Arrow.Vext (Compression(Lz4, None))
 import GHC.Exts (Int#, Int32#, Word16#)
 import Data.Unlifted (pattern True#)
 import Arithmetic.Nat (pattern N3#, pattern N4#, pattern N5#)
