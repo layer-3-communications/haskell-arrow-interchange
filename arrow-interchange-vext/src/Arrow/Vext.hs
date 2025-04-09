@@ -34,6 +34,7 @@ import Data.Int
 
 import Control.Monad (when)
 import Arithmetic.Types (Fin32#,Nat#,(:=:#))
+import Arithmetic.Nat (pattern N1#)
 import Data.Bytes.Types (ByteArrayN(ByteArrayN),Bytes(Bytes))
 import Data.Primitive (SmallArray,ByteArray(ByteArray),PrimArray)
 import Data.Primitive.Unlifted.Array (UnliftedArray)
@@ -50,6 +51,7 @@ import GHC.Int (Int64(I64#),Int(I#))
 import GHC.TypeNats (Nat, type (+))
 import Control.Monad.ST (runST)
 import Arithmetic.Types (Fin(Fin))
+import Arithmetic.Unsafe (Fin32#(Fin32#)) -- todo: get rid of this
 
 import qualified Vector.Unlifted.ShortText
 import qualified Data.Text.Short.Unlifted
@@ -383,6 +385,9 @@ instance Eq NamedColumns where
       C.foldrZipWith (\a b acc -> eqNamedColumn szA eq a b && acc) True columnsA columnsB
     _ -> False
 
+emptyByteArrayN :: ByteArrayN 0
+emptyByteArrayN = ByteArrayN mempty
+
 makeEmptyNamedColumns :: Schema -> Either ArrowParser.Error NamedColumns
 makeEmptyNamedColumns schema = do
   let emptyValidity = Bit.empty
@@ -390,6 +395,10 @@ makeEmptyNamedColumns schema = do
     (\bldr field -> case field.type_ of
       Timestamp TableTimestamp{unit=Second} -> do
         let !col = NamedColumn field.name emptyValidity (TimestampUtcSecond Int64.empty)
+        let !bldr' = col : bldr
+        pure bldr'
+      Utf8 -> do
+        let !col = NamedColumn field.name emptyValidity (VariableBinaryUtf8 (VariableBinary emptyByteArrayN (Int32.replicate N1# (Fin32# (Exts.intToInt32# 0#)))))
         let !bldr' = col : bldr
         pure bldr'
       Int TableInt{bitWidth,isSigned} -> do
