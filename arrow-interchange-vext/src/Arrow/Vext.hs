@@ -223,7 +223,7 @@ appendVarBinIxs m n k j ixsA ixsB = runST $ do
         let !srcIx = Fin.incrementR# N1# srcIxPred
         let !old = Int32.index ixsB srcIx
         let !dstIx = Fin.incrementR# N1# (Fin.incrementL# m srcIxPred) :: Fin# ((m + n) + 1)
-        let !new@(Fin# newInner) = Fin.incrementL# k (Fin.nativeFrom32# old) :: Fin# (k + (j + 1))
+        let !(Fin# newInner) = Fin.incrementL# k (Fin.nativeFrom32# old) :: Fin# (k + (j + 1))
         -- TODO: Figure out a way to use the associativity of addition instead
         -- of cheating here. I need to add stuff to natural-arithmetic.
         let !new' = Fin# newInner :: Fin# ((k + j) + 1)
@@ -333,6 +333,7 @@ makePayloads !_ !cols = go 0 PayloadsNil
 columnToType :: Column n -> Type
 columnToType = \case
   PrimitiveInt8{} -> Int TableInt{bitWidth=8,isSigned=True}
+  PrimitiveInt16{} -> Int TableInt{bitWidth=16,isSigned=True}
   PrimitiveInt32{} -> Int TableInt{bitWidth=32,isSigned=True}
   PrimitiveWord64{} -> Int TableInt{bitWidth=64,isSigned=False}
   PrimitiveWord32{} -> Int TableInt{bitWidth=32,isSigned=False}
@@ -654,18 +655,22 @@ decompressBufferIfNeeded mc !contents BodyBounds{bodyStart,bodyEnd} buf = do
   when (off + len > bodyEnd) $ Left ArrowParser.BatchDataOutOfRange
   case mc of
     Nothing -> do
-      pure (bufDataStartOff, len, contents)
+      Right (bufDataStartOff, len, contents)
     Just (BodyCompression Lz4Frame) -> do
       when (rem bufDataStartOff 8 /= 0) $ Left ArrowParser.CompressedBufferMisaligned
       let (decompressedSize :: Int64) = LE.indexByteArray contents (quot bufDataStartOff 8)
-      when (decompressedSize >= 0xFFFF_FFFF) $ Left (ArrowParser.CannotDecompressToGiganticArray decompressedSize)
-      case compare decompressedSize (-1) of
-        EQ -> Left ArrowParser.DisabledDecompressionNotSupported
-        LT -> Left ArrowParser.NegativeDecompressedSize
-        GT -> do
-          let decompressedSizeI = fromIntegral decompressedSize :: Int
-          decompressed <- maybe (Left ArrowParser.Lz4DecompressionFailure) Right (Lz4.Frame.decompressU decompressedSizeI (Bytes contents (bufDataStartOff + 8) (len - 8)))
-          pure (0, decompressedSizeI, decompressed)
+      -- This works around a mistake in the Clickhouse implementation of arrow.
+      -- Instead of setting the length to negative one to indicate an uncompressed
+      -- buffer, clickhouse sets it to 0xFFFF_FFFF. This issue is tracked at
+      -- https://github.com/ClickHouse/ClickHouse/issues/79058
+      if | decompressedSize > 0xFFFF_FFFF -> Left (ArrowParser.CannotDecompressToGiganticArray decompressedSize)
+         | decompressedSize == (-1) || decompressedSize == 0xFFFF_FFFF -> do
+             Right (bufDataStartOff + 8, len - 8, contents)
+         | decompressedSize < (-1) -> Left ArrowParser.NegativeDecompressedSize
+         | otherwise -> do
+             let decompressedSizeI = fromIntegral decompressedSize :: Int
+             decompressed <- maybe (Left ArrowParser.Lz4DecompressionFailure) Right (Lz4.Frame.decompressU decompressedSizeI (Bytes contents (bufDataStartOff + 8) (len - 8)))
+             pure (0, decompressedSizeI, decompressed)
 
 i64ToI :: Int64 -> Int
 i64ToI = fromIntegral
