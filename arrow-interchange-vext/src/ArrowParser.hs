@@ -26,7 +26,7 @@ import qualified Data.Primitive.ByteArray.LittleEndian as LE
 data Error
   = MissingMagicTrailer
   | NegativeBatchLength
-  | Lz4DecompressionFailure
+  | Lz4DecompressionFailure !Int !Int
   | CompressedBufferMisaligned
   | CannotDecompressToGiganticArray !Int64
   | NegativeDecompressedSize
