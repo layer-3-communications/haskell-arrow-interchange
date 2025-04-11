@@ -599,8 +599,8 @@ handleOneBatch !contents footer block batch = do
           let offsetArrayStart = fromIntegral @Int64 @Int bufOffsets.offset + (bodyStart - 8)
           let offsetArrayLen = fromIntegral @Int64 @Int bufOffsets.length
           when (offsetArrayStart + offsetArrayLen > bodyEnd) $ Left ArrowParser.BatchDataOutOfRange
-          (dataOffTrue, dataLenTrue, dataContents) <- decompressBufferIfNeeded batch.compression contents bodyBounds bufData
-          (offsOffTrue, offsLenTrue, offsContents) <- decompressBufferIfNeeded batch.compression contents bodyBounds bufOffsets
+          (dataOffTrue, dataLenTrue, dataContents) <- decompressBufferIfNeeded field batch.compression contents bodyBounds bufData
+          (offsOffTrue, offsLenTrue, offsContents) <- decompressBufferIfNeeded field batch.compression contents bodyBounds bufOffsets
           when (rem offsOffTrue 4 /= 0) $ Left (ArrowParser.MisalignedOffsetForIntBatch 4 offsOffTrue)
           when (offsLenTrue < (1 + I# (Nat.demote# n)) * 4) $ Left (ArrowParser.ColumnByteLengthDisagreesWithBatchLength field.name offsLenTrue (1 + (I# (Nat.demote# n))) 4)
           let dataContents' = if dataOffTrue == 0 && PM.sizeofByteArray dataContents == dataLenTrue
@@ -639,7 +639,7 @@ primitiveColumnExtraction bodyBounds@BodyBounds{bodyEnd} !contents n !bufferCoun
   -- Invariants:
   -- * trueOff is suitably aligned
   -- * trueLen is nonnegative
-  (trueOff, trueLen, trueContents) <- decompressBufferIfNeeded batch.compression contents bodyBounds buf
+  (trueOff, trueLen, trueContents) <- decompressBufferIfNeeded field batch.compression contents bodyBounds buf
   when (rem trueOff byteWidth /= 0) $ Left (ArrowParser.MisalignedOffsetForIntBatch byteWidth trueOff)
   when (trueLen < I# (Nat.demote# n) * byteWidth) $ Left (ArrowParser.ColumnByteLengthDisagreesWithBatchLength field.name trueLen (I# (Nat.demote# n)) byteWidth)
   let !trueOffElems = quot trueOff byteWidth
@@ -647,10 +647,11 @@ primitiveColumnExtraction bodyBounds@BodyBounds{bodyEnd} !contents n !bufferCoun
 
 -- Return values: true offset, true length, buffer that offset and len apply to.
 -- Return the true offset to the beginning of the decompressed buffer, in bytes.
-decompressBufferIfNeeded :: Maybe BodyCompression -> ByteArray -> BodyBounds -> Buffer -> Either ArrowParser.Error (Int, Int, ByteArray)
-decompressBufferIfNeeded mc !contents BodyBounds{bodyStart,bodyEnd} buf = do
+decompressBufferIfNeeded :: Field -> Maybe BodyCompression -> ByteArray -> BodyBounds -> Buffer -> Either ArrowParser.Error (Int, Int, ByteArray)
+decompressBufferIfNeeded field mc !contents BodyBounds{bodyStart,bodyEnd} buf = do
   let off = fromIntegral @Int64 @Int buf.offset
   let len = fromIntegral @Int64 @Int buf.length
+  when (len == 0) $ Left $ ArrowParser.EncounteredZeroLengthBuffer field.name
   let !bufDataStartOff = off + bodyStart - 8
   when (off + len > bodyEnd) $ Left ArrowParser.BatchDataOutOfRange
   case mc of

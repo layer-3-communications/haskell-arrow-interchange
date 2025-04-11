@@ -60,6 +60,7 @@ data Error
   | OnlyRecordBatchesAreSupported
   | VariableBinaryIndicesBad
   | CannotUnmarshalColumnWithType !Type
+  | EncounteredZeroLengthBuffer !Text
   deriving (Show)
 
 extractMetadata :: ByteArray -> Block -> Either Error Message
