@@ -599,7 +599,22 @@ handleOneBatch !contents footer block batch = do
           let offsetArrayStart = fromIntegral @Int64 @Int bufOffsets.offset + (bodyStart - 8)
           let offsetArrayLen = fromIntegral @Int64 @Int bufOffsets.length
           when (offsetArrayStart + offsetArrayLen > bodyEnd) $ Left ArrowParser.BatchDataOutOfRange
-          (dataOffTrue, dataLenTrue, dataContents) <- decompressBufferIfNeeded field batch.compression contents bodyBounds bufData
+          -- Clickhouse's arrow serializer includes a behavior that is either
+          -- a mistake or some kind of understood-but-not-documented quirk
+          -- of the Arrow format. When the data buffer has zero bytes (which
+          -- happens when all of the strings in the column are the empty string),
+          -- Clickhouse returns a buffer with length zero. This buffer does not
+          -- have the 8-byte prefix that compressed buffers must have.
+          -- I do not think that the spec allows this. In Message.fbs, I see
+          -- the following note (which should only apply to validity buffers):
+          --
+          -- null_count: long;
+          -- /// The number of observed nulls. Fields with null_count == 0 may choose not
+          -- /// to write their physical validity bitmap out as a materialized buffer,
+          -- /// instead setting the length of the bitmap buffer to 0.
+          (dataOffTrue, dataLenTrue, dataContents) <- case bufData.length of
+            0 -> pure (0, 0, mempty :: ByteArray)
+            _ -> decompressBufferIfNeeded field batch.compression contents bodyBounds bufData
           (offsOffTrue, offsLenTrue, offsContents) <- decompressBufferIfNeeded field batch.compression contents bodyBounds bufOffsets
           when (rem offsOffTrue 4 /= 0) $ Left (ArrowParser.MisalignedOffsetForIntBatch 4 offsOffTrue)
           when (offsLenTrue < (1 + I# (Nat.demote# n)) * 4) $ Left (ArrowParser.ColumnByteLengthDisagreesWithBatchLength field.name offsLenTrue (1 + (I# (Nat.demote# n))) 4)
