@@ -7,6 +7,7 @@ module ArrowParser
   ) where
 
 import Arrow.Builder.Raw (Footer,Block(Block),Message,parseFooter,parseMessage)
+import Arrow.Builder.Raw (Type)
 import Control.Monad (when)
 import Control.Monad.ST (runST)
 import Data.Bifunctor (first)
@@ -57,6 +58,7 @@ data Error
   | DecompressionNotSupported
   | OnlyRecordBatchesAreSupported
   | VariableBinaryIndicesBad
+  | CannotUnmarshalColumnWithType !Type
   deriving (Show)
 
 extractMetadata :: ByteArray -> Block -> Either Error Message

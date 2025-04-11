@@ -212,7 +212,7 @@ appendVarBinIxs m n k j ixsA ixsB = runST $ do
   -- for i in [0:m]: (inclusive upper bound)
   --   dst[i] = src[i]
   -- for i in [0:n): (exclusive upper bound)
-  --   dst[i+m+1] = src[i+1]
+  --   dst[i+m+1] = src[i+1] + k
   Int32.copySlice (Lte.incrementR# @1 (Lte.weakenR# @n (Lte.reflexive# @m (# #)))) (Lte.reflexive# (# #)) dst N0#
     (Int32.weakenFins (Lte.incrementR# @1 (Lte.weakenR# @j (Lte.reflexive# @k (# #)))) ixsA)
     N0# (Nat.succ# m)
@@ -611,6 +611,7 @@ handleOneBatch !contents footer block batch = do
               let !col = NamedColumn field.name defaultValidity (VariableBinaryUtf8 (VariableBinary dataContentsLenIxed ixs))
               let !bldr' = col : bldr
               pure (bufIx + 3, bldr')
+        ty -> Left (ArrowParser.CannotUnmarshalColumnWithType ty)
       ) (0 :: Int, []) batch.nodes footer.schema.fields
     pure (NamedColumns n (Exts.fromList (List.reverse finalBldr)))
 
