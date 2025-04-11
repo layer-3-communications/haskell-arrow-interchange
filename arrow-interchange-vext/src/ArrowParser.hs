@@ -16,6 +16,7 @@ import Data.Primitive (ByteArray)
 import Data.Primitive (sizeofByteArray,indexByteArray)
 import Data.Text (Text)
 import Data.Word (Word32,Word8)
+import Data.Int (Int64)
 
 import qualified Arrow.Builder.Raw
 import qualified Data.Primitive as PM
@@ -27,7 +28,7 @@ data Error
   | NegativeBatchLength
   | Lz4DecompressionFailure
   | CompressedBufferMisaligned
-  | CannotDecompressToGiganticArray
+  | CannotDecompressToGiganticArray !Int64
   | NegativeDecompressedSize
   | DisabledDecompressionNotSupported
   | ContentsTooSmall

@@ -658,7 +658,7 @@ decompressBufferIfNeeded mc !contents BodyBounds{bodyStart,bodyEnd} buf = do
     Just (BodyCompression Lz4Frame) -> do
       when (rem bufDataStartOff 8 /= 0) $ Left ArrowParser.CompressedBufferMisaligned
       let (decompressedSize :: Int64) = LE.indexByteArray contents (quot bufDataStartOff 8)
-      when (decompressedSize >= 0xFFFF_FFFF) $ Left ArrowParser.CannotDecompressToGiganticArray
+      when (decompressedSize >= 0xFFFF_FFFF) $ Left (ArrowParser.CannotDecompressToGiganticArray decompressedSize)
       case compare decompressedSize (-1) of
         EQ -> Left ArrowParser.DisabledDecompressionNotSupported
         LT -> Left ArrowParser.NegativeDecompressedSize
