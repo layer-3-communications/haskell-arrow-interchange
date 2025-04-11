@@ -1,2 +1,17 @@
 with-compiler: ghc-9.8.4
 packages: ./arrow-interchange-common ./arrow-interchange-vext
+
+source-repository-package
+  type: git
+  location: https://github.com/andrewthad/vext
+  tag: ee0cdd703a7b95842232c5a804115f7a699fbeea
+
+source-repository-package
+  type: git
+  location: https://github.com/byteverse/byteslice
+  tag: e7df4e89aacd0ba443d2233b1f0e0dc73d8d1ece
+
+source-repository-package
+  type: git
+  location: https://github.com/byteverse/natural-arithmetic
+  tag: fd87b5f230337c7daf6333e4a21239e873884e20

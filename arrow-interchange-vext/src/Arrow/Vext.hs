@@ -1,4 +1,5 @@
 {-# language DataKinds #-}
+{-# language UnboxedTuples #-}
 {-# language MultiWayIf #-}
 {-# language LambdaCase #-}
 {-# language MagicHash #-}
@@ -32,57 +33,61 @@ import Arrow.Builder.Raw
 
 import Data.Int
 
-import Control.Monad (when)
+import Arithmetic.Nat (pattern N0#, pattern N1#)
+import Arithmetic.Nat ((<=?#),(<?#))
+import Arithmetic.Types (Fin(Fin),Fin#)
 import Arithmetic.Types (Fin32#,Nat#,(:=:#))
-import Arithmetic.Nat (pattern N1#)
+import Arithmetic.Unsafe (Fin32#(Fin32#)) -- todo: get rid of this
+import Arithmetic.Unsafe (Fin#(Fin#)) -- todo: get rid of this
+import Control.Monad (when)
+import Control.Monad.ST (runST)
 import Data.Bytes.Types (ByteArrayN(ByteArrayN),Bytes(Bytes))
+import Data.Foldable (foldlM)
+import Data.Maybe (fromMaybe)
+import Data.Maybe.Void (pattern JustVoid#)
 import Data.Primitive (SmallArray,ByteArray(ByteArray),PrimArray)
 import Data.Primitive.Unlifted.Array (UnliftedArray)
-import Data.Foldable (foldlM)
 import Data.Text (Text)
 import Data.Unlifted (Bool#, pattern True#, ShortText#)
 import Data.Unlifted (PrimArray#(PrimArray#))
-import Data.Maybe.Void (pattern JustVoid#)
-import Data.Maybe (fromMaybe)
 import Data.Word (Word32)
-import GHC.Exts (Int8#,Int16#,Int32#,Int64#,Word64#,Word32#,Word16#,Word8#)
 import GHC.Exts ((+#))
+import GHC.Exts (Int8#,Int16#,Int32#,Int64#,Word64#,Word32#,Word16#,Word8#)
 import GHC.Int (Int64(I64#),Int(I#))
 import GHC.TypeNats (Nat, type (+))
-import Control.Monad.ST (runST)
-import Arithmetic.Types (Fin(Fin))
-import Arithmetic.Unsafe (Fin32#(Fin32#)) -- todo: get rid of this
 
-import qualified Vector.Unlifted.ShortText
-import qualified Data.Text.Short.Unlifted
-import qualified Data.Bytes as Bytes
-import qualified Data.List as List
 import qualified Arithmetic.Fin as Fin
-import qualified Arithmetic.Nat as Nat
 import qualified Arithmetic.Lt as Lt
+import qualified Arithmetic.Lte as Lte
+import qualified Arithmetic.Nat as Nat
 import qualified Arithmetic.Types as Arithmetic
 import qualified ArrowParser
 import qualified Data.Builder.Catenable.Bytes as Catenable
+import qualified Data.ByteString.Short as SBS
+import qualified Data.Bytes as Bytes
+import qualified Data.Bytes.Indexed
+import qualified Data.List as List
 import qualified Data.Primitive as PM
+import qualified Data.Primitive.ByteArray.LittleEndian as LE
 import qualified Data.Primitive.Contiguous as C
 import qualified Data.Text as T
+import qualified Data.Text.Short as TS
+import qualified Data.Text.Short.Unlifted
 import qualified Flatbuffers.Builder as B
 import qualified GHC.Exts as Exts
 import qualified GHC.TypeNats as GHC
 import qualified Lz4.Frame
-import qualified Data.Primitive.ByteArray.LittleEndian as LE
-import qualified Data.Text.Short as TS
-import qualified Data.ByteString.Short as SBS
 import qualified Vector.Bit as Bit
+import qualified Vector.Int16 as Int16
 import qualified Vector.Int32 as Int32
 import qualified Vector.Int64 as Int64
-import qualified Vector.Word8 as Word8
 import qualified Vector.Int8 as Int8
-import qualified Vector.Int16 as Int16
+import qualified Vector.Unlifted as Unlifted
+import qualified Vector.Unlifted.ShortText
 import qualified Vector.Word16 as Word16
 import qualified Vector.Word32 as Word32
 import qualified Vector.Word64 as Word64
-import qualified Vector.Unlifted as Unlifted
+import qualified Vector.Word8 as Word8
 
 data Column n
   = PrimitiveInt8
@@ -136,6 +141,8 @@ appendColumn n m (TimestampUtcMillisecond a) (TimestampUtcMillisecond b) = Just 
 appendColumn _ _ (TimestampUtcMillisecond _) _ = Nothing
 appendColumn n m (Date64 a) (Date64 b) = Just $! Date64 $! Int64.append n m a b
 appendColumn _ _ (Date64 _) _ = Nothing
+appendColumn n m (VariableBinaryUtf8 a) (VariableBinaryUtf8 b) = Just $! VariableBinaryUtf8 $! appendVariableBinary n m a b
+appendColumn _ _ (VariableBinaryUtf8 _) _ = Nothing
 
 showColumn :: Arithmetic.Nat# n -> Column n -> String
 showColumn n (PrimitiveInt32 x) = Int32.show n x
@@ -181,6 +188,48 @@ data VariableBinary (n :: GHC.Nat) = forall (m :: GHC.Nat). VariableBinary
   -- be in nondescending order. The first element should be zero, and the
   -- last element should be m.
   !(Int32.Vector (n + 1) (Fin32# (m + 1)))
+
+appendVariableBinary :: forall (m :: Nat) (n :: Nat).
+     Nat# m
+  -> Nat# n
+  -> VariableBinary m -> VariableBinary n -> VariableBinary (m + n)
+appendVariableBinary m n (VariableBinary payloadA ixsA) (VariableBinary payloadB ixsB) =
+  VariableBinary
+    (Data.Bytes.Indexed.append payloadA payloadB)
+    (appendVarBinIxs m n (Data.Bytes.Indexed.length# payloadA) (Data.Bytes.Indexed.length# payloadB) ixsA ixsB)
+
+appendVarBinIxs :: forall (m :: Nat) (n :: Nat) (k :: Nat) (j :: Nat).
+     Nat# m
+  -> Nat# n
+  -> Nat# k
+  -> Nat# j
+  -> Int32.Vector (m + 1) (Fin32# (k + 1))
+  -> Int32.Vector (n + 1) (Fin32# (j + 1))
+  -> Int32.Vector ((m + n) + 1) (Fin32# ((k + j) + 1))
+appendVarBinIxs m n k j ixsA ixsB = runST $ do
+  dst <- Int32.initialized (Nat.succ# (Nat.plus# m n)) (Fin32# (Exts.intToInt32# 0#) :: Fin32# ((k + j) + 1))
+  -- Strategy:
+  -- for i in [0:m]: (inclusive upper bound)
+  --   dst[i] = src[i]
+  -- for i in [0:n): (exclusive upper bound)
+  --   dst[i+m+1] = src[i+1]
+  Int32.copySlice (Lte.incrementR# @1 (Lte.weakenR# @n (Lte.reflexive# @m (# #)))) (Lte.reflexive# (# #)) dst N0#
+    (Int32.weakenFins (Lte.incrementR# @1 (Lte.weakenR# @j (Lte.reflexive# @k (# #)))) ixsA)
+    N0# (Nat.succ# m)
+  let !bound = Nat.succ# (Nat.plus# k j)
+  case bound <=?# Nat.constant# @2147483648 (# #) of
+    JustVoid# boundLte -> do
+      Fin.ascendM_# n $ \(srcIxPred :: Fin# n) -> do
+        let !srcIx = Fin.incrementR# N1# srcIxPred
+        let !old = Int32.index ixsB srcIx
+        let !dstIx = Fin.incrementR# N1# (Fin.incrementL# m srcIxPred) :: Fin# ((m + n) + 1)
+        let !new@(Fin# newInner) = Fin.incrementL# k (Fin.nativeFrom32# old) :: Fin# (k + (j + 1))
+        -- TODO: Figure out a way to use the associativity of addition instead
+        -- of cheating here. I need to add stuff to natural-arithmetic.
+        let !new' = Fin# newInner :: Fin# ((k + j) + 1)
+        Int32.write dst dstIx (Fin.nativeTo32# boundLte new')
+      Int32.unsafeFreeze dst
+    _ -> errorWithoutStackTrace "appendVarBinIxs: bound got too big when appending"
 
 shortTextVectorToVariableBinary :: forall n. Nat# n -> Unlifted.Vector n ShortText# -> VariableBinary n
 shortTextVectorToVariableBinary n texts = runST $ do
