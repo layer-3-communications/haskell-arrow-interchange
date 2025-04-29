@@ -228,12 +228,12 @@ parseType :: P.UnionParser Type
 parseType = P.constructUnionFromList
   [ pure Null
   , Int <$> (TableInt <$> P.int32 <*> P.boolean)
-  , P.tableParserThrow P.UnsupportedUnionTag
-  , P.tableParserThrow P.UnsupportedUnionTag
+  , P.tableParserThrow (P.UnsupportedUnionTag 3)
+  , P.tableParserThrow (P.UnsupportedUnionTag 4)
   , pure Utf8
-  , P.tableParserThrow P.UnsupportedUnionTag
-  , P.tableParserThrow P.UnsupportedUnionTag
-  , P.tableParserThrow P.UnsupportedUnionTag
-  , P.tableParserThrow P.UnsupportedUnionTag
+  , P.tableParserThrow (P.UnsupportedUnionTag 6)
+  , P.tableParserThrow (P.UnsupportedUnionTag 7)
+  , P.tableParserThrow (P.UnsupportedUnionTag 8)
+  , P.tableParserThrow (P.UnsupportedUnionTag 9)
   , Timestamp <$> (TableTimestamp <$> fmap TimeUnit P.word16 <*> P.string)
   ]

@@ -25,7 +25,7 @@ library
     , bytestring >=0.11.4
     , contiguous >=0.6.4.2
     , flatbuffers-builder >=1.0
-    , flatbuffers-parser >=0.1.0.1
+    , flatbuffers-parser >=0.2
     , lz4-bytes >=0.1.2
     , natural-arithmetic >=0.2.2
     , primitive >=0.8
