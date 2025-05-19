@@ -109,6 +109,8 @@ data Column n
   | VariableBinaryUtf8 !(VariableBinary n)
   | TimestampUtcNanosecond
       !(Int64.Vector n Int64#)
+  | TimestampUtcMicrosecond
+      !(Int64.Vector n Int64#)
   | TimestampUtcMillisecond
       !(Int64.Vector n Int64#)
   | TimestampUtcSecond
@@ -143,6 +145,8 @@ appendColumn n m (TimestampUtcMillisecond a) (TimestampUtcMillisecond b) = Just 
 appendColumn _ _ (TimestampUtcMillisecond _) _ = Nothing
 appendColumn n m (TimestampUtcNanosecond a) (TimestampUtcNanosecond b) = Just $! TimestampUtcNanosecond $! Int64.append n m a b
 appendColumn _ _ (TimestampUtcNanosecond _) _ = Nothing
+appendColumn n m (TimestampUtcMicrosecond a) (TimestampUtcMicrosecond b) = Just $! TimestampUtcMicrosecond $! Int64.append n m a b
+appendColumn _ _ (TimestampUtcMicrosecond _) _ = Nothing
 appendColumn n m (Date64 a) (Date64 b) = Just $! Date64 $! Int64.append n m a b
 appendColumn _ _ (Date64 _) _ = Nothing
 appendColumn n m (VariableBinaryUtf8 a) (VariableBinaryUtf8 b) = Just $! VariableBinaryUtf8 $! appendVariableBinary n m a b
@@ -316,6 +320,10 @@ makePayloads !_ !cols = go 0 PayloadsNil
               PrimArray# b ->
                 let b' = ByteArray b
                  in finishPrimitive b'
+            TimestampUtcMicrosecond v -> case Int64.expose v of
+              PrimArray# b ->
+                let b' = ByteArray b
+                 in finishPrimitive b'
             TimestampUtcMillisecond v -> case Int64.expose v of
               PrimArray# b ->
                 let b' = ByteArray b
@@ -350,6 +358,8 @@ columnToType = \case
   PrimitiveInt64{} -> Int TableInt{bitWidth=64,isSigned=True}
   TimestampUtcNanosecond{} ->
     Timestamp TableTimestamp{unit=Nanosecond,timezone=T.pack "UTC"}
+  TimestampUtcMicrosecond{} ->
+    Timestamp TableTimestamp{unit=Microsecond,timezone=T.pack "UTC"}
   TimestampUtcMillisecond{} ->
     Timestamp TableTimestamp{unit=Millisecond,timezone=T.pack "UTC"}
   TimestampUtcSecond{} ->
@@ -573,6 +583,7 @@ handleOneBatch !contents footer block batch = do
           let !inner = case unit of
                 Second -> TimestampUtcSecond arr
                 Millisecond -> TimestampUtcMillisecond arr
+                Microsecond -> TimestampUtcMicrosecond arr
                 Nanosecond -> TimestampUtcNanosecond arr
                 _ -> error "Arrow.Vext: forgot to handle a time unit for a timestamp column"
           let !col = NamedColumn field.name defaultValidity inner
