@@ -107,6 +107,8 @@ data Column n
   | PrimitiveWord64
       !(Word64.Vector n Word64#)
   | VariableBinaryUtf8 !(VariableBinary n)
+  | TimestampUtcNanosecond
+      !(Int64.Vector n Int64#)
   | TimestampUtcMillisecond
       !(Int64.Vector n Int64#)
   | TimestampUtcSecond
@@ -139,6 +141,8 @@ appendColumn n m (TimestampUtcSecond a) (TimestampUtcSecond b) = Just $! Timesta
 appendColumn _ _ (TimestampUtcSecond _) _ = Nothing
 appendColumn n m (TimestampUtcMillisecond a) (TimestampUtcMillisecond b) = Just $! TimestampUtcMillisecond $! Int64.append n m a b
 appendColumn _ _ (TimestampUtcMillisecond _) _ = Nothing
+appendColumn n m (TimestampUtcNanosecond a) (TimestampUtcNanosecond b) = Just $! TimestampUtcNanosecond $! Int64.append n m a b
+appendColumn _ _ (TimestampUtcNanosecond _) _ = Nothing
 appendColumn n m (Date64 a) (Date64 b) = Just $! Date64 $! Int64.append n m a b
 appendColumn _ _ (Date64 _) _ = Nothing
 appendColumn n m (VariableBinaryUtf8 a) (VariableBinaryUtf8 b) = Just $! VariableBinaryUtf8 $! appendVariableBinary n m a b
@@ -308,6 +312,10 @@ makePayloads !_ !cols = go 0 PayloadsNil
               PrimArray# b ->
                 let b' = ByteArray b
                  in finishPrimitive b'
+            TimestampUtcNanosecond v -> case Int64.expose v of
+              PrimArray# b ->
+                let b' = ByteArray b
+                 in finishPrimitive b'
             TimestampUtcMillisecond v -> case Int64.expose v of
               PrimArray# b ->
                 let b' = ByteArray b
@@ -340,6 +348,8 @@ columnToType = \case
   PrimitiveWord16{} -> Int TableInt{bitWidth=16,isSigned=False}
   PrimitiveWord8{} -> Int TableInt{bitWidth=8,isSigned=False}
   PrimitiveInt64{} -> Int TableInt{bitWidth=64,isSigned=True}
+  TimestampUtcNanosecond{} ->
+    Timestamp TableTimestamp{unit=Nanosecond,timezone=T.pack "UTC"}
   TimestampUtcMillisecond{} ->
     Timestamp TableTimestamp{unit=Millisecond,timezone=T.pack "UTC"}
   TimestampUtcSecond{} ->
@@ -557,9 +567,15 @@ handleOneBatch !contents footer block batch = do
       (\(bufIx, bldr) _ field -> case field.type_ of
         -- We do not need to use node unless we support Arrow lists
         -- Currently ignoring the time zone. Fix this.
-        Timestamp TableTimestamp{unit=Second} -> do
+        Timestamp TableTimestamp{unit=unit} -> do
           (trueOffElems, trueContents) <- primitiveColumnExtraction bodyBounds contents n bufferCount bufIx field 8 batch
-          let !col = NamedColumn field.name defaultValidity (TimestampUtcSecond (Int64.cloneFromByteArray trueOffElems n trueContents))
+          let !arr = Int64.cloneFromByteArray trueOffElems n trueContents
+          let !inner = case unit of
+                Second -> TimestampUtcSecond arr
+                Millisecond -> TimestampUtcMillisecond arr
+                Nanosecond -> TimestampUtcNanosecond arr
+                _ -> error "Arrow.Vext: forgot to handle a time unit for a timestamp column"
+          let !col = NamedColumn field.name defaultValidity inner
           let !bldr' = col : bldr
           pure (bufIx + 2, bldr')
         Int TableInt{bitWidth,isSigned} -> do
