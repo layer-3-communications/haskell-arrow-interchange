@@ -463,7 +463,8 @@ makeEmptyNamedColumns schema = do
   let emptyValidity = Bit.empty
   finalBldr <- C.foldlM'
     (\bldr field -> case field.type_ of
-      Timestamp TableTimestamp{unit=Second} -> do
+      Timestamp TableTimestamp{} -> do
+        -- Regardless of the unit of precision, the zero value is the same.
         let !col = NamedColumn field.name emptyValidity (TimestampUtcSecond Int64.empty)
         let !bldr' = col : bldr
         pure bldr'
