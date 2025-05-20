@@ -713,7 +713,7 @@ decompressBufferIfNeeded field mc !contents BodyBounds{bodyStart,bodyEnd} buf = 
          | decompressedSize < (-1) -> Left ArrowParser.NegativeDecompressedSize
          | otherwise -> do
              let decompressedSizeI = fromIntegral decompressedSize :: Int
-             decompressed <- maybe (Left (ArrowParser.Lz4DecompressionFailure (len - 8) decompressedSizeI)) Right (Lz4.Frame.decompressU decompressedSizeI (Bytes contents (bufDataStartOff + 8) (len - 8)))
+             decompressed <- maybe (Left (ArrowParser.Lz4DecompressionFailure bufDataStartOff (len - 8) decompressedSizeI)) Right (Lz4.Frame.decompressU decompressedSizeI (Bytes contents (bufDataStartOff + 8) (len - 8)))
              pure (0, decompressedSizeI, decompressed)
 
 i64ToI :: Int64 -> Int
