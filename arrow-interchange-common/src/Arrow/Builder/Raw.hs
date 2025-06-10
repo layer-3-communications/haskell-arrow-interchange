@@ -236,7 +236,7 @@ encodePayloadsLz4 payloads =
   let EncodePayloadState{builder=builderZ,buffers=buffersZ} = C.foldl'
         (\EncodePayloadState{position,builder,buffers} payload ->
           let payloadSize = PM.sizeofByteArray payload
-           in if payloadSize <= 64 || payloadSize >= 4194304
+           in if payloadSize <= 64
                 then
                   -- We pad to 8-byte alignment rather than 64-byte alignment.
                   -- Anyone working with compressed Arrow buffers should not expecting
