@@ -18,6 +18,7 @@ module Arrow.Vext
   , Compression(..)
   , Footer(..)
   , Block(..)
+  , Schema(..)
   , encode
   , encodeNamedColumns
   , decode
