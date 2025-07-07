@@ -16,6 +16,8 @@ module Arrow.Vext
   , NamedColumn(..)
   , NamedColumns(..)
   , Compression(..)
+  , Footer(..)
+  , Block(..)
   , encode
   , encodeNamedColumns
   , decode
@@ -106,7 +108,8 @@ data Column n
       !(Word32.Vector n Word32#)
   | PrimitiveWord64
       !(Word64.Vector n Word64#)
-  | VariableBinaryUtf8 !(VariableBinary n)
+  | VariableBinaryUtf8
+      !(VariableBinary n)
   | TimestampUtcNanosecond
       !(Int64.Vector n Int64#)
   | TimestampUtcMicrosecond
@@ -196,6 +199,12 @@ data VariableBinary (n :: GHC.Nat) = forall (m :: GHC.Nat). VariableBinary
   -- be in nondescending order. The first element should be zero, and the
   -- last element should be m.
   !(Int32.Vector (n + 1) (Fin32# (m + 1)))
+
+-- data ListView (elements :: GHC.Nat -> Type) (n :: GHC.Nat) = forall (m :: GHC.Nat). ListView
+--   { offsets :: !(Int32.Vector n (Fin32# m))
+--   , sizes :: !(Int32.Vector n _)
+--   , values :: !(elements m)
+--   }
 
 appendVariableBinary :: forall (m :: Nat) (n :: Nat).
      Nat# m

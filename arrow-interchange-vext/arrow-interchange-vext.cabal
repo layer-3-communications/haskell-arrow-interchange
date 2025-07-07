@@ -27,14 +27,14 @@ library
     , flatbuffers-builder >=1.0
     , flatbuffers-parser >=0.2
     , lz4-bytes >=0.2.0
-    , natural-arithmetic >=0.2.2
+    , natural-arithmetic >=0.2.3
     , primitive >=0.8
     , primitive-unlifted >=2.2
     , run-st >=0.1.1
     , text >=2.0
     , text-short
     , unlifted >=0.2.1
-    , vext >=0.1.5
+    , vext >=0.1.8
   hs-source-dirs: src
   default-language: GHC2021
 
