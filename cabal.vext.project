@@ -1,2 +1,12 @@
 with-compiler: ghc-9.8.4
 packages: ./arrow-interchange-common ./arrow-interchange-vext
+
+source-repository-package
+  type: git
+  location: https://github.com/andrewthad/vext.git
+  tag: 5eba2ea3094c10d3cb9e6ec05192d53a64a77319
+
+source-repository-package
+  type: git
+  location: https://github.com/andrewthad/unlifted.git
+  tag: db58d17b76dd7612ee1eca37196a63f39e4d9cb3

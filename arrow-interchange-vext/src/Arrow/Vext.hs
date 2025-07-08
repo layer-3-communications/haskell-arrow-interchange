@@ -52,7 +52,7 @@ import Data.Primitive (SmallArray,ByteArray(ByteArray),PrimArray)
 import Data.Primitive.Unlifted.Array (UnliftedArray)
 import Data.Text (Text)
 import Data.Unlifted (Bool#, pattern True#, ShortText#)
-import Data.Unlifted (PrimArray#(PrimArray#))
+import Data.Unlifted (PrimArray#(PrimArray#), Word128#)
 import Data.Word (Word32)
 import GHC.Exts ((+#))
 import GHC.Exts (Int8#,Int16#,Int32#,Int64#,Word64#,Word32#,Word16#,Word8#)
@@ -90,6 +90,7 @@ import qualified Vector.Unlifted.ShortText
 import qualified Vector.Word16 as Word16
 import qualified Vector.Word32 as Word32
 import qualified Vector.Word64 as Word64
+import qualified Vector.Word128 as Word128
 import qualified Vector.Word8 as Word8
 
 data Column n
@@ -109,6 +110,8 @@ data Column n
       !(Word32.Vector n Word32#)
   | PrimitiveWord64
       !(Word64.Vector n Word64#)
+  | FixedSizeBinary16
+      !(Word128.Vector n Word128#)
   | VariableBinaryUtf8
       !(VariableBinary n)
   | TimestampUtcNanosecond
@@ -143,6 +146,8 @@ appendColumn n m (PrimitiveWord32 a) (PrimitiveWord32 b) = Just $! PrimitiveWord
 appendColumn _ _ (PrimitiveWord32 _) _ = Nothing
 appendColumn n m (PrimitiveWord64 a) (PrimitiveWord64 b) = Just $! PrimitiveWord64 $! Word64.append n m a b
 appendColumn _ _ (PrimitiveWord64 _) _ = Nothing
+appendColumn n m (FixedSizeBinary16 a) (FixedSizeBinary16 b) = Just $! FixedSizeBinary16 $! Word128.append n m a b
+appendColumn _ _ (FixedSizeBinary16 _) _ = Nothing
 appendColumn n m (TimestampUtcSecond a) (TimestampUtcSecond b) = Just $! TimestampUtcSecond $! Int64.append n m a b
 appendColumn _ _ (TimestampUtcSecond _) _ = Nothing
 appendColumn n m (TimestampUtcMillisecond a) (TimestampUtcMillisecond b) = Just $! TimestampUtcMillisecond $! Int64.append n m a b
@@ -163,6 +168,7 @@ showColumn n (PrimitiveWord8 x) = Word8.show n x
 showColumn n (PrimitiveWord16 x) = Word16.show n x
 showColumn n (PrimitiveWord32 x) = Word32.show n x
 showColumn n (PrimitiveWord64 x) = Word64.show n x
+-- showColumn n (FixedSizeBinary16 x) = Word128.show n x
 
 -- Only used by the test suite
 showNamedColumn :: Nat# n -> NamedColumn n -> String
@@ -192,6 +198,7 @@ eqColumn n eq x y = go x y where
   go (PrimitiveWord32 a) (PrimitiveWord32 b) = Word32.equals n a (Word32.substitute eq b)
   go (PrimitiveWord16 a) (PrimitiveWord16 b) = Word16.equals n a (Word16.substitute eq b)
   go (PrimitiveWord8 a) (PrimitiveWord8 b) = Word8.equals n a (Word8.substitute eq b)
+  go (FixedSizeBinary16 a) (FixedSizeBinary16 b) = Word128.equals n a (Word128.substitute eq b)
   go _ _ = error "Arrow.Builder.Vext.eqColumn: finish writing this"
 
 data VariableBinary (n :: GHC.Nat) = forall (m :: GHC.Nat). VariableBinary
@@ -314,6 +321,10 @@ makePayloads !_ !cols = go 0 PayloadsNil
               PrimArray# b ->
                 let b' = ByteArray b
                  in finishPrimitive b'
+            FixedSizeBinary16 v -> case Word128.expose v of
+              PrimArray# b ->
+                let b' = ByteArray b
+                 in finishPrimitive b'
             PrimitiveWord8 v -> case Word8.expose v of
               PrimArray# b ->
                 let b' = ByteArray b
@@ -362,6 +373,7 @@ columnToType = \case
   PrimitiveInt16{} -> Int TableInt{bitWidth=16,isSigned=True}
   PrimitiveInt32{} -> Int TableInt{bitWidth=32,isSigned=True}
   PrimitiveWord64{} -> Int TableInt{bitWidth=64,isSigned=False}
+  FixedSizeBinary16{} -> FixedSizeBinary TableFixedSizeBinary{byteWidth=16}
   PrimitiveWord32{} -> Int TableInt{bitWidth=32,isSigned=False}
   PrimitiveWord16{} -> Int TableInt{bitWidth=16,isSigned=False}
   PrimitiveWord8{} -> Int TableInt{bitWidth=8,isSigned=False}
@@ -482,6 +494,10 @@ makeEmptyNamedColumns schema = do
         let !col = NamedColumn field.name emptyValidity (VariableBinaryUtf8 (VariableBinary emptyByteArrayN (Int32.replicate N1# (Fin32# (Exts.intToInt32# 0#)))))
         let !bldr' = col : bldr
         pure bldr'
+      FixedSizeBinary TableFixedSizeBinary{byteWidth=16} -> do
+        let !col = NamedColumn field.name emptyValidity (FixedSizeBinary16 Word128.empty)
+        let !bldr' = col : bldr
+        pure bldr'
       Int TableInt{bitWidth,isSigned} -> do
         !col <-
           if | 8 <- bitWidth, True <- isSigned ->
@@ -600,6 +616,13 @@ handleOneBatch !contents footer block batch = do
           let !col = NamedColumn field.name defaultValidity inner
           let !bldr' = col : bldr
           pure (bufIx + 2, bldr')
+        FixedSizeBinary TableFixedSizeBinary{byteWidth=w} -> case w of
+          16 -> do
+            (trueOffElems, trueContents) <- primitiveColumnExtraction bodyBounds contents n bufferCount bufIx field 16 batch
+            let !col = NamedColumn field.name defaultValidity (FixedSizeBinary16 (Word128.cloneFromByteArray trueOffElems n trueContents))
+            let !bldr' = col : bldr
+            pure (bufIx + 2, bldr')
+          _ -> Left ArrowParser.UnsupportedCombinationOfBitWidthAndSign
         Int TableInt{bitWidth,isSigned} -> do
           byteWidth <- case bitWidth of
             8 -> Right 1
