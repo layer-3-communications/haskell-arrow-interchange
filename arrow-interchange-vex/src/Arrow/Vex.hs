@@ -7,12 +7,15 @@
 {-# language ScopedTypeVariables #-}
 {-# language OverloadedRecordDot #-}
 
-module Arrow.Builder.Vex
+module Arrow.Vex
   ( Column(..)
   , NamedColumn(..)
   , Contents(..)
   , MaskedColumn(..)
   , Compression(..)
+  , Footer(..)
+  , Block(..)
+  , Schema(..)
   , encode
     -- * Schema
   , makeSchema

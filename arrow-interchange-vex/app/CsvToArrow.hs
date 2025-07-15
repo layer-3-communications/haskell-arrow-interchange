@@ -3,7 +3,7 @@
 {-# language OverloadedStrings #-}
 
 import Arithmetic.Types (Fin(Fin))
-import Arrow.Builder.Vex (NamedColumn(..),Compression(..),MaskedColumn(..),Contents(..))
+import Arrow.Vex (NamedColumn(..),Compression(..),MaskedColumn(..),Contents(..))
 import Control.Monad (when)
 import Control.Monad.ST (stToIO)
 import Data.Bytes (Bytes)
@@ -20,7 +20,7 @@ import qualified Arithmetic.Fin as Fin
 import qualified Arithmetic.Lte as Lte
 import qualified Arithmetic.Nat as Nat
 import qualified Arithmetic.Types as Arithmetic
-import qualified Arrow.Builder.Vex
+import qualified Arrow.Vex
 import qualified Data.Builder.Catenable.Bytes as Catenable
 import qualified Data.Bytes as Bytes
 import qualified Data.Bytes.Chunks as Chunks
@@ -72,7 +72,7 @@ main = do
       Nat.with rowsLen $ \n -> do
         cols <- decodeColumns n (zip decodedNames dataColumns)
         IO.withFile "output.arrow" IO.WriteMode $ \h -> do
-          Chunks.hPut h (Catenable.run (Arrow.Builder.Vex.encode n compression (Exts.fromList cols)))
+          Chunks.hPut h (Catenable.run (Arrow.Vex.encode n compression (Exts.fromList cols)))
 
 decodeColumns :: Arithmetic.Nat n -> [(DecodedName,[Bytes])] -> IO [NamedColumn n]
 decodeColumns !n = traverse (uncurry (decodeColumn n))
@@ -96,7 +96,7 @@ decodeColumn !n DecodedName{name,ty} xs = do
               Word8.write lt dst ix w
       dst' <- stToIO (Word8.unsafeFreeze dst)
       mask' <- stToIO (Bool.unsafeFreeze mask)
-      pure NamedColumn{name,contents=Values MaskedColumn{mask=mask',column=Arrow.Builder.Vex.PrimitiveWord8 dst'}}
+      pure NamedColumn{name,contents=Values MaskedColumn{mask=mask',column=Arrow.Vex.PrimitiveWord8 dst'}}
     Unsigned16 -> do
       dst <- stToIO (Word16.uninitialized n)
       mask <- stToIO (Bool.uninitialized n)
@@ -112,7 +112,7 @@ decodeColumn !n DecodedName{name,ty} xs = do
               Word16.write lt dst ix w
       dst' <- stToIO (Word16.unsafeFreeze dst)
       mask' <- stToIO (Bool.unsafeFreeze mask)
-      pure NamedColumn{name,contents=Values MaskedColumn{mask=mask',column=Arrow.Builder.Vex.PrimitiveWord16 dst'}}
+      pure NamedColumn{name,contents=Values MaskedColumn{mask=mask',column=Arrow.Vex.PrimitiveWord16 dst'}}
     Unsigned32 -> do
       dst <- stToIO (Word32.uninitialized n)
       mask <- stToIO (Bool.uninitialized n)
@@ -132,7 +132,7 @@ decodeColumn !n DecodedName{name,ty} xs = do
               Word32.write lt dst ix w
       dst' <- stToIO (Word32.unsafeFreeze dst)
       mask' <- stToIO (Bool.unsafeFreeze mask)
-      pure NamedColumn{name,contents=Values MaskedColumn{mask=mask',column=Arrow.Builder.Vex.PrimitiveWord32 dst'}}
+      pure NamedColumn{name,contents=Values MaskedColumn{mask=mask',column=Arrow.Vex.PrimitiveWord32 dst'}}
     Unsigned64 -> do
       dst <- stToIO (Word64.uninitialized n)
       mask <- stToIO (Bool.uninitialized n)
@@ -148,7 +148,7 @@ decodeColumn !n DecodedName{name,ty} xs = do
               Word64.write lt dst ix w
       dst' <- stToIO (Word64.unsafeFreeze dst)
       mask' <- stToIO (Bool.unsafeFreeze mask)
-      pure NamedColumn{name,contents=Values MaskedColumn{mask=mask',column=Arrow.Builder.Vex.PrimitiveWord64 dst'}}
+      pure NamedColumn{name,contents=Values MaskedColumn{mask=mask',column=Arrow.Vex.PrimitiveWord64 dst'}}
     Signed64 -> do
       dst <- stToIO (Int64.uninitialized n)
       mask <- stToIO (Bool.uninitialized n)
@@ -164,7 +164,7 @@ decodeColumn !n DecodedName{name,ty} xs = do
               Int64.write lt dst ix w
       dst' <- stToIO (Int64.unsafeFreeze dst)
       mask' <- stToIO (Bool.unsafeFreeze mask)
-      pure NamedColumn{name,contents=Values MaskedColumn{mask=mask',column=Arrow.Builder.Vex.PrimitiveInt64 dst'}}
+      pure NamedColumn{name,contents=Values MaskedColumn{mask=mask',column=Arrow.Vex.PrimitiveInt64 dst'}}
     String -> do
       dst <- stToIO (ShortText.uninitialized n)
       stToIO (ShortText.set Lte.reflexive dst Nat.zero n mempty)
@@ -181,7 +181,7 @@ decodeColumn !n DecodedName{name,ty} xs = do
               ShortText.write lt dst ix s
       dst' <- stToIO (ShortText.unsafeFreeze dst)
       mask' <- stToIO (Bool.unsafeFreeze mask)
-      pure NamedColumn{name,contents=Values MaskedColumn{mask=mask',column=Arrow.Builder.Vex.VariableBinaryUtf8 dst'}}
+      pure NamedColumn{name,contents=Values MaskedColumn{mask=mask',column=Arrow.Vex.VariableBinaryUtf8 dst'}}
     Strings -> do
       dst <- stToIO (ShortTexts.uninitialized n)
       stToIO (ShortTexts.set Lte.reflexive dst Nat.zero n mempty)
@@ -198,7 +198,7 @@ decodeColumn !n DecodedName{name,ty} xs = do
               ShortTexts.write lt dst ix (Exts.fromList s)
       dst' <- stToIO (ShortTexts.unsafeFreeze dst)
       mask' <- stToIO (Bool.unsafeFreeze mask)
-      pure NamedColumn{name,contents=Values MaskedColumn{mask=mask',column=Arrow.Builder.Vex.ListVariableBinaryUtf8 dst'}}
+      pure NamedColumn{name,contents=Values MaskedColumn{mask=mask',column=Arrow.Vex.ListVariableBinaryUtf8 dst'}}
 
 zeroBoolArray :: Bool.MutableVector RealWorld n -> IO ()
 zeroBoolArray v = do

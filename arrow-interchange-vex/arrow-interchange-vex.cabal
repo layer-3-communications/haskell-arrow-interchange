@@ -62,7 +62,7 @@ library instantiations
 library
   import: shared
   exposed-modules:
-    Arrow.Builder.Vex
+    Arrow.Vex
   build-depends:
     , base >=4.16
     , arrow-interchange-common
