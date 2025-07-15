@@ -1,2 +1,17 @@
-with-compiler: ghc-9.6.6
-packages: ./arrow-interchange-common ./arrow-interchange-vex ../vex-indef ../vex ../basics
+with-compiler: ghc-9.8.4
+packages: ./arrow-interchange-common ./arrow-interchange-vex
+
+source-repository-package
+  type: git
+  location: https://github.com/andrewthad/vex
+  tag: fe1e30c4222369ee993e183ecc9b7fc25757562a
+
+source-repository-package
+  type: git
+  location: https://github.com/andrewthad/vex-indef
+  tag: 9f45fb5102ec3f2122a075f3d84a5ca44b1fffa6
+
+source-repository-package
+  type: git
+  location: https://github.com/layer-3-communications/basics
+  tag: 611a98fc78857f3dc8564fc88336f3f72511063e

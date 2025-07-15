@@ -198,7 +198,7 @@ makeFooterPrim !blocks !schema = Footer
 encodePayloadsUncompressed ::
      UnliftedArray ByteArray
   -> ( Catenable.Builder
-     , SmallArray Buffer
+     , PrimArray Buffer
      )
 encodePayloadsUncompressed payloads =
   let EncodePayloadState{builder=builderZ,buffers=buffersZ} = C.foldl'
@@ -230,7 +230,7 @@ encodePayloadsUncompressed payloads =
 encodePayloadsLz4 ::
      UnliftedArray ByteArray
   -> ( Catenable.Builder
-     , SmallArray Buffer
+     , PrimArray Buffer
      )
 encodePayloadsLz4 payloads =
   let EncodePayloadState{builder=builderZ,buffers=buffersZ} = C.foldl'

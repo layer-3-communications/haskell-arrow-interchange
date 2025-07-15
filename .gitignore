@@ -1,5 +1,6 @@
 dist
 dist-*
+distvex/
 cabal-dev
 *.o
 *.hi

@@ -32,6 +32,7 @@ import Control.Monad (join)
 import Control.Monad.ST (runST)
 import Data.Primitive (SmallArray,ByteArray(ByteArray))
 import Data.Primitive.Unlifted.Array (UnliftedArray)
+import Data.Primitive (PrimArray)
 import Data.Text (Text)
 import GHC.TypeNats (type (+))
 
@@ -322,12 +323,14 @@ naivePopCount !n !v = Fin.ascend' n 0 $ \(Fin ix lt) acc -> acc + (if Bool.index
 makeRecordBatch ::
      Arithmetic.Nat n
   -> Compression
-  -> SmallArray Buffer
+  -> PrimArray Buffer
   -> SmallArray (NamedColumn n)
   -> RecordBatch
 makeRecordBatch !n cmpr buffers !cols = RecordBatch
   { length = fromIntegral (Nat.demote n)
-  , nodes = join $ C.map'
+    -- Note: Try to rewrite this at some point. This builds a
+    -- SmallArray and then converts to a PrimArray.
+  , nodes = C.convert $ join $ C.map'
       (\MaskedColumn{mask,column} -> case column of
         ListVariableBinaryUtf8 txts -> C.doubleton
           ( FieldNode
@@ -339,7 +342,7 @@ makeRecordBatch !n cmpr buffers !cols = RecordBatch
             { length=fromIntegral (countAllElements n txts)
             , nullCount=0
             }
-          )
+          ) :: SmallArray FieldNode
         Word128FixedSizeListWord8 _ -> C.doubleton
           ( FieldNode
             { length=fromIntegral (Nat.demote n)
@@ -351,7 +354,7 @@ makeRecordBatch !n cmpr buffers !cols = RecordBatch
             , nullCount=0
             }
           )
-        _ -> pure $ FieldNode
+        _ -> C.singleton $! FieldNode
           { length=fromIntegral (Nat.demote n)
           , nullCount=fromIntegral @Int @Int64 (Nat.demote n - naivePopCount n mask)
           }
