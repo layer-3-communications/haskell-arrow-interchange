@@ -31,6 +31,8 @@ module Arrow.Vext
   , encodeFooterAndEpilogue
     -- * Variable Binary Helper
   , shortTextVectorToVariableBinary
+    -- * Dictionaries
+  , makeNaiveDictionary
   ) where
 
 import Arrow.Builder.Raw
@@ -895,3 +897,6 @@ makeRecordBatch !n cmpr buffers !cols = RecordBatch
   , buffers = C.convert buffers
   , compression = marshallCompression cmpr
   }
+
+makeNaiveDictionary :: Nat# n -> Vector n -> Column n
+makeNaiveDictionary n v = ColumnDict n v (Int32.ascendingFins n)
