@@ -30,6 +30,7 @@ $(deriveFromJSON defaultOptions ''Field)
 $(deriveFromJSON defaultOptions ''Schema)
 $(deriveFromJSON defaultOptions ''FieldNode)
 $(deriveFromJSON defaultOptions ''RecordBatch)
+$(deriveFromJSON defaultOptions ''DictionaryBatch)
 $(deriveFromJSON defaultOptions ''MessageHeader)
 $(deriveFromJSON defaultOptions ''Message)
 

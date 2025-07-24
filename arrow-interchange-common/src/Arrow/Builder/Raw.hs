@@ -41,6 +41,7 @@ module Arrow.Builder.Raw
   , Message(..)
   , FieldNode(..)
   , RecordBatch(..)
+  , DictionaryBatch(..)
   , MessageHeader(..)
   , CompressionType(..)
   , BodyCompression(..)
@@ -291,8 +292,8 @@ data EncodePayloadState = EncodePayloadState
     -- ^ This is built in reverse order
   }
 
--- Argument: the encoded record batch;
--- Output, the encoded record batch prefixed by
+-- Argument: the encoded message (record batch or dictionary);
+-- Output: the encoded message prefixed by
 -- * the continuation byte sequence
 -- * the length
 -- And suffixed by

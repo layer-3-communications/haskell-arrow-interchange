@@ -7,6 +7,7 @@ module ArrowMessage
   ( Message(..)
   , FieldNode(..)
   , RecordBatch(..)
+  , DictionaryBatch(..)
   , MessageHeader(..)
   , CompressionType(..)
   , BodyCompression(..)
@@ -67,6 +68,12 @@ data RecordBatch = RecordBatch
   , compression :: !(Maybe BodyCompression)
   } deriving (Show)
 
+data DictionaryBatch = DictionaryBatch
+  { id :: !Int64 -- the dictionary id
+  , data_ :: !RecordBatch
+  , isDelta :: !Bool
+  } deriving (Show)
+
 -- We omit the method field since the only value for BodyCompressionMethod
 -- is BUFFER.
 newtype BodyCompression = BodyCompression
@@ -81,7 +88,7 @@ data CompressionType
 
 data MessageHeader
   = MessageHeaderSchema !Schema
-  | MessageHeaderDictionaryBatch
+  | MessageHeaderDictionaryBatch !DictionaryBatch
   | MessageHeaderRecordBatch !RecordBatch
   deriving (Show)
 
@@ -118,9 +125,22 @@ parseRecordBatch = RecordBatch
   <*> P.structs
   <*> P.optTable parseBodyCompression
 
+parseDictionaryBatch :: P.TableParser DictionaryBatch
+parseDictionaryBatch = DictionaryBatch
+  <$> P.int64
+  <*> P.table parseRecordBatch
+  <*> P.boolean
+
 parseBodyCompression :: P.TableParser BodyCompression
 parseBodyCompression = BodyCompression
   <$> (P.word8Eq 0 $> Lz4Frame)
+
+encodeDictionaryBatch :: DictionaryBatch -> B.Object
+encodeDictionaryBatch DictionaryBatch{id,data_,isDelta} =
+  B.Object $ Contiguous.tripleton
+    (B.signed64 id)
+    (B.FieldObject (encodeRecordBatch data_))
+    (B.boolean isDelta)
 
 encodeRecordBatch :: RecordBatch -> B.Object
 encodeRecordBatch RecordBatch{length,nodes,buffers,compression} =
@@ -138,6 +158,7 @@ encodeMessageHeader :: MessageHeader -> B.Union
 encodeMessageHeader = \case
   MessageHeaderSchema s -> B.Union{tag=1,object=encodeSchema s}
   MessageHeaderRecordBatch b -> B.Union{tag=3,object=encodeRecordBatch b}
+  MessageHeaderDictionaryBatch b -> B.Union{tag=2,object=encodeDictionaryBatch b}
 
 encodeMessage :: Message -> B.Object
 encodeMessage Message{header,bodyLength} = B.Object $ Exts.fromList
@@ -149,7 +170,7 @@ encodeMessage Message{header,bodyLength} = B.Object $ Exts.fromList
 parseMessageHeader :: P.UnionParser MessageHeader
 parseMessageHeader = P.constructUnion3
   (MessageHeaderSchema <$> parseSchema)
-  (pure MessageHeaderDictionaryBatch)
+  (MessageHeaderDictionaryBatch <$> parseDictionaryBatch)
   (MessageHeaderRecordBatch <$> parseRecordBatch)
 
 parseMessage :: P.TableParser Message

@@ -12,6 +12,7 @@
 
 module Arrow.Vext
   ( Column(..)
+  , Vector(..)
   , VariableBinary(..)
   , NamedColumn(..)
   , NamedColumns(..)
@@ -25,7 +26,7 @@ module Arrow.Vext
     -- * Schema
   , makeSchema
     -- * Streaming
-  , encodeBatch
+  , encodeBatchAtOffset
   , encodePreludeAndSchema
   , encodeFooterAndEpilogue
     -- * Variable Binary Helper
@@ -93,7 +94,7 @@ import qualified Vector.Word64 as Word64
 import qualified Vector.Word128 as Word128
 import qualified Vector.Word8 as Word8
 
-data Column n
+data Vector n
   = PrimitiveInt8
       !(Int8.Vector n Int8#)
   | PrimitiveInt16
@@ -129,7 +130,7 @@ data Column n
   | Date64
       !(Int64.Vector n Int64#)
 
-appendColumn :: Nat# n -> Nat# m -> Column n -> Column m -> Maybe (Column (n + m))
+appendColumn :: Nat# n -> Nat# m -> Vector n -> Vector m -> Maybe (Vector (n + m))
 appendColumn n m (PrimitiveInt8 a) (PrimitiveInt8 b) = Just $! PrimitiveInt8 $! Int8.append n m a b
 appendColumn _ _ (PrimitiveInt8 _) _ = Nothing
 appendColumn n m (PrimitiveInt16 a) (PrimitiveInt16 b) = Just $! PrimitiveInt16 $! Int16.append n m a b
@@ -161,14 +162,19 @@ appendColumn _ _ (Date64 _) _ = Nothing
 appendColumn n m (VariableBinaryUtf8 a) (VariableBinaryUtf8 b) = Just $! VariableBinaryUtf8 $! appendVariableBinary n m a b
 appendColumn _ _ (VariableBinaryUtf8 _) _ = Nothing
 
-showColumn :: Arithmetic.Nat# n -> Column n -> String
-showColumn n (PrimitiveInt32 x) = Int32.show n x
-showColumn n (PrimitiveInt64 x) = Int64.show n x
-showColumn n (PrimitiveWord8 x) = Word8.show n x
-showColumn n (PrimitiveWord16 x) = Word16.show n x
-showColumn n (PrimitiveWord32 x) = Word32.show n x
-showColumn n (PrimitiveWord64 x) = Word64.show n x
+showVector :: Arithmetic.Nat# n -> Vector n -> String
+showVector n (PrimitiveInt32 x) = Int32.show n x
+showVector n (PrimitiveInt64 x) = Int64.show n x
+showVector n (PrimitiveWord8 x) = Word8.show n x
+showVector n (PrimitiveWord16 x) = Word16.show n x
+showVector n (PrimitiveWord32 x) = Word32.show n x
+showVector n (PrimitiveWord64 x) = Word64.show n x
 -- showColumn n (FixedSizeBinary16 x) = Word128.show n x
+
+showColumn :: Arithmetic.Nat# n -> Column n -> String
+showColumn n = \case
+  ColumnNoDict v -> "ColumnNoDict " ++ showVector n v
+  ColumnDict{} -> "ColumnDict{..}"
 
 -- Only used by the test suite
 showNamedColumn :: Nat# n -> NamedColumn n -> String
@@ -189,7 +195,13 @@ eqNamedColumn n eq x y =
 
 eqColumn :: Nat# n -> m :=:# n -> Column n -> Column m -> Bool
 {-# noinline eqColumn #-}
-eqColumn n eq x y = go x y where
+eqColumn n eq x y
+  | ColumnNoDict x' <- x, ColumnNoDict y' <- y = eqVector n eq x' y'
+  | otherwise = False
+
+eqVector :: Nat# n -> m :=:# n -> Vector n -> Vector m -> Bool
+{-# noinline eqVector #-}
+eqVector n eq x y = go x y where
   go (PrimitiveInt8 a) (PrimitiveInt8 b) = Int8.equals n a (Int8.substitute eq b)
   go (PrimitiveInt16 a) (PrimitiveInt16 b) = Int16.equals n a (Int16.substitute eq b)
   go (PrimitiveInt32 a) (PrimitiveInt32 b) = Int32.equals n a (Int32.substitute eq b)
@@ -276,25 +288,51 @@ shortTextVectorToVariableBinary n texts = runST $ do
         Nothing -> errorWithoutStackTrace "shortTextVectorToVariableBinary: implementation mistake"
         Just fins -> pure (VariableBinary @n contents fins)
 
+data Column n
+  = forall m. ColumnDict
+      !(Nat# m) -- number of entries in dictionary
+      !(Vector m) -- the dictionary
+      !(Int32.Vector n (Fin32# m))
+  | ColumnNoDict !(Vector n)
+
 data NamedColumn n = NamedColumn
   { name :: !Text
   , mask :: !(Bit.Vector n Bool#)
   , column :: !(Column n)
   }
 
-makePayloads :: Arithmetic.Nat n -> SmallArray (NamedColumn n) -> UnliftedArray ByteArray
+-- Reasons that this type exists:
+-- 1. We do not need the name after we are done with serializing
+--    the schema.
+-- 2. When encoding columns that use dictionaries, we encode the
+--    dictionary almost just like a regular column. This type is
+--    a target for both dictionary extraction and index extraction.
+data MaskedVector n = MaskedVector
+  { mask :: !(Bit.Vector n Bool#)
+  , vector :: !(Vector n)
+  }
+
+namedColumnToMaskedVector :: NamedColumn n -> MaskedVector n
+namedColumnToMaskedVector NamedColumn{mask,column} = MaskedVector
+  { mask
+  , vector = case column of
+      ColumnNoDict v -> v
+      ColumnDict _ _ ixs -> PrimitiveInt32 (Int32.fromFins ixs)
+  }
+
+makePayloads :: Nat# n -> SmallArray (MaskedVector n) -> UnliftedArray ByteArray
 makePayloads !_ !cols = go 0 PayloadsNil
   where
   go :: Int -> Payloads -> UnliftedArray ByteArray
   go !ix !acc = if ix < PM.sizeofSmallArray cols
     then
-      let NamedColumn{mask,column} = PM.indexSmallArray cols ix
+      let MaskedVector{mask,vector} = PM.indexSmallArray cols ix
           finishPrimitive !exposed = case Bit.expose mask of
             PrimArray# b -> 
               let exposedMask = ByteArray b
                   acc' = consPrimitive exposed exposedMask acc
                in go (ix + 1) acc'
-       in case column of
+       in case vector of
             VariableBinaryUtf8 (VariableBinary (ByteArrayN b) szs) ->
               let !acc' = consVariableBinary b
                     (ByteArray (case Bit.expose mask of PrimArray# x -> x))
@@ -369,6 +407,11 @@ makePayloads !_ !cols = go 0 PayloadsNil
 
 columnToType :: Column n -> Type
 columnToType = \case
+  ColumnNoDict v -> vectorToType v
+  ColumnDict _ v _ -> vectorToType v
+
+vectorToType :: Vector n -> Type
+vectorToType = \case
   PrimitiveInt8{} -> Int TableInt{bitWidth=8,isSigned=True}
   PrimitiveInt16{} -> Int TableInt{bitWidth=16,isSigned=True}
   PrimitiveInt32{} -> Int TableInt{bitWidth=32,isSigned=True}
@@ -407,6 +450,58 @@ makeSchema !namedColumns = Schema
   , fields = fmap namedColumnToField namedColumns
   }
 
+data EncodeDictOutput
+  = EncodeDictOutputNone -- No dictionary was needed
+  | EncodeDictOutputSome
+      !Catenable.Builder
+      !Block -- offset is zero and must be replaced
+
+encodeOneDictionaryAtOffset ::
+     Int64 -- ^ Offset for block metadata
+  -> Compression
+  -> Int64 -- ^ ID for this dictionary
+  -> NamedColumn n
+  -> EncodeDictOutput
+encodeOneDictionaryAtOffset !offset cmpr !ident NamedColumn{column} = case column of
+  ColumnNoDict{} -> EncodeDictOutputNone
+  ColumnDict m dict _ ->
+    let PartiallyEncodedRecordBatch{recordBatch,body,bodyLength} = partiallyEncodeBatch m cmpr (C.singleton (MaskedVector (Bit.replicate m True# ) dict))
+        encodedMessage = B.encode $ encodeMessage $ Message
+          { header=MessageHeaderDictionaryBatch DictionaryBatch
+            { id = ident
+            , data_ = recordBatch
+            , isDelta = False -- delta dictionaries not currently supported
+            }
+          , bodyLength
+          }
+        partB = encodePartB encodedMessage
+        block = Block
+          { offset
+          , metaDataLength = fromIntegral @Int @Int32 (Catenable.length partB)
+          , bodyLength
+          }
+     in EncodeDictOutputSome (partB <> body) block
+
+-- For dictionaries IDs, we use the position in the array of columns
+encodeManyDictionaries ::
+     Int64 -- ^ Offset for block metadata
+  -> Compression
+  -> SmallArray (NamedColumn n)
+  -> EncDictState
+encodeManyDictionaries !offset0 cmpr = C.ifoldl'
+  (\(EncDictState offset blocks builder) ix nc ->
+    case encodeOneDictionaryAtOffset offset cmpr (fromIntegral ix) nc of
+      EncodeDictOutputNone -> EncDictState offset blocks builder
+      EncodeDictOutputSome builderNext block ->
+        let size = fromIntegral (Catenable.length builderNext) :: Int64
+         in EncDictState (offset + size) (block : blocks) (builder <> builderNext)
+  ) (EncDictState offset0 [] mempty)
+
+data EncDictState = EncDictState
+  !Int64 -- offset
+  ![Block] -- these are backwards
+  !Catenable.Builder
+
 -- | Includes the following:
 --
 -- * Continuation bytes
@@ -418,51 +513,65 @@ makeSchema !namedColumns = Schema
 -- construct the footer. This 'Block' has the offset set to zero (we do
 -- not have enough data to compute it here), so the caller must reset that
 -- field.
-encodeBatch ::
-     Arithmetic.Nat n
+encodeBatchAtOffset ::
+     Int64 -- ^ offset where the batch starts, needed for the block metadata
+  -> Nat# n
   -> Compression
   -> SmallArray (NamedColumn n)
-  -> (Catenable.Builder,Block)
-encodeBatch !n cmpr !namedColumns =
-  let payloads = makePayloads n namedColumns :: UnliftedArray ByteArray
-      (body,buffers) = case cmpr of
-        None -> encodePayloadsUncompressed payloads
-        Lz4 -> encodePayloadsLz4 payloads
-      bodyLength = Catenable.length body
-      recordBatch = makeRecordBatch n cmpr buffers namedColumns
+  -> (Catenable.Builder, [Block])
+encodeBatchAtOffset !offset0 !n cmpr !namedColumns =
+  let EncDictState offset1 reversedBlocks dictBuilder = encodeManyDictionaries offset0 cmpr namedColumns
+      PartiallyEncodedRecordBatch{recordBatch,body,bodyLength} = partiallyEncodeBatch n cmpr (C.map namedColumnToMaskedVector namedColumns)
       encodedRecordBatch = B.encode $ encodeMessage $ Message
         { header=MessageHeaderRecordBatch recordBatch
-        , bodyLength=fromIntegral bodyLength
+        , bodyLength
         }
       partB = encodePartB encodedRecordBatch
       block = Block
-        { offset = 0 -- Offset is bogus. This is replaced by the true offset in encode.
+        { offset = offset1
         , metaDataLength = fromIntegral @Int @Int32 (Catenable.length partB)
-        , bodyLength = fromIntegral @Int @Int64 bodyLength
+        , bodyLength
         }
-   in (partB <> body,block)
+      blocks' = List.reverse (block : reversedBlocks)
+   in (dictBuilder <> partB <> body, blocks')
+
+partiallyEncodeBatch :: 
+     Nat# n
+  -> Compression
+  -> SmallArray (MaskedVector n)
+  -> PartiallyEncodedRecordBatch
+partiallyEncodeBatch !n cmpr !maskedVectors =
+  let payloads = makePayloads n maskedVectors :: UnliftedArray ByteArray
+      (body, buffers) = case cmpr of
+        None -> encodePayloadsUncompressed payloads
+        Lz4 -> encodePayloadsLz4 payloads
+      bodyLength = Catenable.length body
+      recordBatch = makeRecordBatch n cmpr buffers maskedVectors
+   in PartiallyEncodedRecordBatch recordBatch body (fromIntegral bodyLength :: Int64)
+
+data PartiallyEncodedRecordBatch = PartiallyEncodedRecordBatch
+  { recordBatch :: !RecordBatch
+  , body :: Catenable.Builder
+  , bodyLength :: !Int64
+  }
 
 -- | Encode a single batch of records.
-encode :: Arithmetic.Nat n -> Compression -> SmallArray (NamedColumn n) -> Catenable.Builder
+encode :: Nat# n -> Compression -> SmallArray (NamedColumn n) -> Catenable.Builder
 encode !n cmpr !namedColumns = 
-  let partA = encodePreludeAndSchema schema
-      (partB,block) = encodeBatch n cmpr namedColumns
-      block' = Block
-        { offset=fromIntegral (Catenable.length partA)
-        , metaDataLength = block.metaDataLength
-        , bodyLength = block.bodyLength
-        }
-   in partA
+  let prelude = encodePreludeAndSchema schema
+      lenPrelude = fromIntegral (Catenable.length prelude) :: Int64
+      (messages, blocks) = encodeBatchAtOffset lenPrelude n cmpr namedColumns
+   in prelude
       <>
-      partB
+      messages
       <>
-      encodeFooterAndEpilogue schema (C.singleton block')
+      encodeFooterAndEpilogue schema (C.fromList blocks)
   where
   schema = makeSchema namedColumns
 
 encodeNamedColumns :: Compression -> NamedColumns -> Catenable.Builder
 encodeNamedColumns cmpr (NamedColumns size columns) =
-  encode (Nat.lift size) cmpr columns
+  encode size cmpr columns
 
 data NamedColumns = forall (n :: Nat). NamedColumns
   { size :: Nat# n
@@ -487,33 +596,33 @@ makeEmptyNamedColumns schema = do
     (\bldr field -> case field.type_ of
       Timestamp TableTimestamp{} -> do
         -- Regardless of the unit of precision, the zero value is the same.
-        let !col = NamedColumn field.name emptyValidity (TimestampUtcSecond Int64.empty)
+        let !col = NamedColumn field.name emptyValidity $! ColumnNoDict (TimestampUtcSecond Int64.empty)
         let !bldr' = col : bldr
         pure bldr'
       Utf8 -> do
-        let !col = NamedColumn field.name emptyValidity (VariableBinaryUtf8 (VariableBinary emptyByteArrayN (Int32.replicate N1# (Fin32# (Exts.intToInt32# 0#)))))
+        let !col = NamedColumn field.name emptyValidity $! ColumnNoDict (VariableBinaryUtf8 (VariableBinary emptyByteArrayN (Int32.replicate N1# (Fin32# (Exts.intToInt32# 0#)))))
         let !bldr' = col : bldr
         pure bldr'
       FixedSizeBinary TableFixedSizeBinary{byteWidth=16} -> do
-        let !col = NamedColumn field.name emptyValidity (FixedSizeBinary16 Word128.empty)
+        let !col = NamedColumn field.name emptyValidity $! ColumnNoDict (FixedSizeBinary16 Word128.empty)
         let !bldr' = col : bldr
         pure bldr'
       Int TableInt{bitWidth,isSigned} -> do
         !col <-
           if | 8 <- bitWidth, True <- isSigned ->
-                 Right $! NamedColumn field.name emptyValidity (PrimitiveInt8 Int8.empty)
+                 Right $! NamedColumn field.name emptyValidity $! ColumnNoDict (PrimitiveInt8 Int8.empty)
              | 32 <- bitWidth, True <- isSigned ->
-                 Right $! NamedColumn field.name emptyValidity (PrimitiveInt32 Int32.empty)
+                 Right $! NamedColumn field.name emptyValidity $! ColumnNoDict (PrimitiveInt32 Int32.empty)
              | 64 <- bitWidth, True <- isSigned ->
-                 Right $! NamedColumn field.name emptyValidity (PrimitiveInt64 Int64.empty)
+                 Right $! NamedColumn field.name emptyValidity $! ColumnNoDict (PrimitiveInt64 Int64.empty)
              | 8 <- bitWidth, False <- isSigned ->
-                 Right $! NamedColumn field.name emptyValidity (PrimitiveWord8 Word8.empty)
+                 Right $! NamedColumn field.name emptyValidity $! ColumnNoDict (PrimitiveWord8 Word8.empty)
              | 16 <- bitWidth, False <- isSigned ->
-                 Right $! NamedColumn field.name emptyValidity (PrimitiveWord16 Word16.empty)
+                 Right $! NamedColumn field.name emptyValidity $! ColumnNoDict (PrimitiveWord16 Word16.empty)
              | 32 <- bitWidth, False <- isSigned ->
-                 Right $! NamedColumn field.name emptyValidity (PrimitiveWord32 Word32.empty)
+                 Right $! NamedColumn field.name emptyValidity $! ColumnNoDict (PrimitiveWord32 Word32.empty)
              | 64 <- bitWidth, False <- isSigned ->
-                 Right $! NamedColumn field.name emptyValidity (PrimitiveWord64 Word64.empty)
+                 Right $! NamedColumn field.name emptyValidity $! ColumnNoDict (PrimitiveWord64 Word64.empty)
              | otherwise -> Left ArrowParser.UnsupportedCombinationOfBitWidthAndSign
         let !bldr' = col : bldr
         pure bldr'
@@ -572,11 +681,14 @@ handleManyBlocks !contents footer blocks = do
           NamedColumns accSize accColumns -> case nc of
             NamedColumns ncSize ncColumns -> do
               let resultColumns = C.zipWith
-                    (\NamedColumn{name,mask=accMask,column=accCol} NamedColumn{mask=ncMask,column=ncCol} -> NamedColumn
-                      { name
-                      , mask = Bit.append accSize ncSize accMask ncMask
-                      , column = fromMaybe (error "handleManyBlocks: column type mismatch") (appendColumn accSize ncSize accCol ncCol)
-                      }
+                    (\NamedColumn{name,mask=accMask,column=accColOuter} NamedColumn{mask=ncMask,column=ncColOuter} ->
+                      if | ColumnNoDict accCol <- accColOuter
+                         , ColumnNoDict ncCol <- ncColOuter -> NamedColumn
+                             { name
+                             , mask = Bit.append accSize ncSize accMask ncMask
+                             , column = ColumnNoDict $ fromMaybe (error "handleManyBlocks: column type mismatch") (appendColumn accSize ncSize accCol ncCol)
+                             }
+                         | otherwise -> error "handleManyBlocks: deal with dictionaries"
                     ) accColumns ncColumns
               pure (NamedColumns (Nat.plus# accSize ncSize) resultColumns)
         ) nc0 ncs
@@ -613,13 +725,13 @@ handleOneBatch !contents footer block batch = do
                 Microsecond -> TimestampUtcMicrosecond arr
                 Nanosecond -> TimestampUtcNanosecond arr
                 _ -> error "Arrow.Vext: forgot to handle a time unit for a timestamp column"
-          let !col = NamedColumn field.name defaultValidity inner
+          let !col = NamedColumn field.name defaultValidity $! ColumnNoDict inner
           let !bldr' = col : bldr
           pure (bufIx + 2, bldr')
         FixedSizeBinary TableFixedSizeBinary{byteWidth=w} -> case w of
           16 -> do
             (trueOffElems, trueContents) <- primitiveColumnExtraction bodyBounds contents n bufferCount bufIx field 16 batch
-            let !col = NamedColumn field.name defaultValidity (FixedSizeBinary16 (Word128.cloneFromByteArray trueOffElems n trueContents))
+            let !col = NamedColumn field.name defaultValidity $! ColumnNoDict (FixedSizeBinary16 (Word128.cloneFromByteArray trueOffElems n trueContents))
             let !bldr' = col : bldr
             pure (bufIx + 2, bldr')
           _ -> Left ArrowParser.UnsupportedCombinationOfBitWidthAndSign
@@ -633,19 +745,19 @@ handleOneBatch !contents footer block batch = do
           (trueOffElems, trueContents) <- primitiveColumnExtraction bodyBounds contents n bufferCount bufIx field byteWidth batch
           !col <-
             if | 1 <- byteWidth, True <- isSigned ->
-                   Right $! NamedColumn field.name defaultValidity (PrimitiveInt8 (Int8.cloneFromByteArray trueOffElems n trueContents))
+                   Right $! NamedColumn field.name defaultValidity $! ColumnNoDict (PrimitiveInt8 (Int8.cloneFromByteArray trueOffElems n trueContents))
                | 4 <- byteWidth, True <- isSigned ->
-                   Right $! NamedColumn field.name defaultValidity (PrimitiveInt32 (Int32.cloneFromByteArray trueOffElems n trueContents))
+                   Right $! NamedColumn field.name defaultValidity $! ColumnNoDict (PrimitiveInt32 (Int32.cloneFromByteArray trueOffElems n trueContents))
                | 8 <- byteWidth, True <- isSigned ->
-                   Right $! NamedColumn field.name defaultValidity (PrimitiveInt64 (Int64.cloneFromByteArray trueOffElems n trueContents))
+                   Right $! NamedColumn field.name defaultValidity $! ColumnNoDict (PrimitiveInt64 (Int64.cloneFromByteArray trueOffElems n trueContents))
                | 1 <- byteWidth, False <- isSigned ->
-                   Right $! NamedColumn field.name defaultValidity (PrimitiveWord8 (Word8.cloneFromByteArray trueOffElems n trueContents))
+                   Right $! NamedColumn field.name defaultValidity $! ColumnNoDict (PrimitiveWord8 (Word8.cloneFromByteArray trueOffElems n trueContents))
                | 2 <- byteWidth, False <- isSigned ->
-                   Right $! NamedColumn field.name defaultValidity (PrimitiveWord16 (Word16.cloneFromByteArray trueOffElems n trueContents))
+                   Right $! NamedColumn field.name defaultValidity $! ColumnNoDict (PrimitiveWord16 (Word16.cloneFromByteArray trueOffElems n trueContents))
                | 4 <- byteWidth, False <- isSigned ->
-                   Right $! NamedColumn field.name defaultValidity (PrimitiveWord32 (Word32.cloneFromByteArray trueOffElems n trueContents))
+                   Right $! NamedColumn field.name defaultValidity $! ColumnNoDict (PrimitiveWord32 (Word32.cloneFromByteArray trueOffElems n trueContents))
                | 8 <- byteWidth, False <- isSigned ->
-                   Right $! NamedColumn field.name defaultValidity (PrimitiveWord64 (Word64.cloneFromByteArray trueOffElems n trueContents))
+                   Right $! NamedColumn field.name defaultValidity $! ColumnNoDict (PrimitiveWord64 (Word64.cloneFromByteArray trueOffElems n trueContents))
                | otherwise -> Left ArrowParser.UnsupportedCombinationOfBitWidthAndSign
           let !bldr' = col : bldr
           pure (bufIx + 2, bldr')
@@ -685,7 +797,7 @@ handleOneBatch !contents footer block batch = do
           Bytes.withLengthU dataContents' $ \m dataContentsLenIxed -> case Int32.toFins (Nat.succ# (Nat.unlift m)) (Nat.succ# n) (Int32.cloneFromByteArray (quot offsOffTrue 4) (Nat.succ# n) offsContents) of
             Nothing -> Left ArrowParser.VariableBinaryIndicesBad
             Just ixs -> do
-              let !col = NamedColumn field.name defaultValidity (VariableBinaryUtf8 (VariableBinary dataContentsLenIxed ixs))
+              let !col = NamedColumn field.name defaultValidity (ColumnNoDict (VariableBinaryUtf8 (VariableBinary dataContentsLenIxed ixs)))
               let !bldr' = col : bldr
               pure (bufIx + 3, bldr')
         ty -> Left (ArrowParser.CannotUnmarshalColumnWithType ty)
@@ -760,27 +872,26 @@ roundUp8 :: Int -> Int
 roundUp8 x = 8 * div (7 + x) 8
 
 -- TODO: Replace this. It is slow and awful.
-naivePopCount :: Arithmetic.Nat n -> Bit.Vector n Bool# -> Int
-naivePopCount !n !v = Fin.ascend' n 0 $ \fin acc ->
-  acc + case Bit.index v (Fin.unlift fin) of
+naivePopCount :: Nat# n -> Bit.Vector n Bool# -> Int
+naivePopCount !n !v = Fin.ascendFrom'# N0# n 0 $ \fin acc ->
+  acc + case Bit.index v fin of
     True# -> 1
     _ -> 0
 
 makeRecordBatch ::
-     Arithmetic.Nat n
+     Nat# n
   -> Compression
-  -> SmallArray Buffer
-  -> SmallArray (NamedColumn n)
+  -> PrimArray Buffer
+  -> SmallArray (MaskedVector n)
   -> RecordBatch
 makeRecordBatch !n cmpr buffers !cols = RecordBatch
-  { length = fromIntegral (Nat.demote n)
+  { length = fromIntegral (I# (Nat.demote# n))
   , nodes = C.map'
-      (\NamedColumn{mask} -> FieldNode
-        { length=fromIntegral (Nat.demote n)
-        , nullCount=fromIntegral @Int @Int64 (Nat.demote n - naivePopCount n mask)
+      (\MaskedVector{mask} -> FieldNode
+        { length=fromIntegral (I# (Nat.demote# n))
+        , nullCount=fromIntegral @Int @Int64 (I# (Nat.demote# n) - naivePopCount n mask)
         }
       ) cols
   , buffers = C.convert buffers
   , compression = marshallCompression cmpr
   }
-
