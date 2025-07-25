@@ -29,8 +29,9 @@ module ArrowSchema
   , pattern DateMillisecond
   ) where
 
+import Prelude hiding (id)
+
 import Data.Word (Word16)
-import Data.Int (Int32)
 import Data.Primitive (SmallArray)
 import Data.Text (Text)
 import Data.Functor (($>))
@@ -71,6 +72,8 @@ pattern DateMillisecond = DateUnit 1
 data Schema = Schema
   { endianness :: !Word16
   , fields :: !(SmallArray Field)
+    -- Think about adding the features field at some point. This might
+    -- not actually be used by any clients though.
   } deriving (Show)
 
 -- This is a flatbuffers struct
@@ -87,7 +90,7 @@ instance PM.Prim Buffer where
        s1 -> writeByteArray# arr# ((2# *# i#) +# 1# ) b s1
   readByteArray# arr# i# s0 = case readByteArray# arr# (2# *# i#) s0 of
     (# s1, (offset :: Int64) #) -> case readByteArray# arr# ((2# *# i#) +# 1# ) s1 of
-      (# s2, (length :: Int64) #) -> (# s2, Buffer{offset,length} #)
+      (# s2, (len :: Int64) #) -> (# s2, Buffer{offset,length=len} #)
   indexByteArray# arr# i# = Buffer
     (indexByteArray# arr# (i# *# 2#))
     (indexByteArray# arr# ((i# *# 2#) +# 1#))

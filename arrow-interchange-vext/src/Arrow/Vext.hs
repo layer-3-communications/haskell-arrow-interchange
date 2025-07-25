@@ -436,12 +436,18 @@ vectorToType = \case
   Date64{} -> Date (TableDate DateMillisecond)
   VariableBinaryUtf8{} -> Utf8
 
-namedColumnToField :: NamedColumn n -> Field
-namedColumnToField NamedColumn{name,column} = Field
+namedColumnToField :: Int -> NamedColumn n -> Field
+namedColumnToField !ix NamedColumn{name,column} = Field
   { name = name
   , nullable = True
   , type_ = columnToType column
-  , dictionary = Nothing
+  , dictionary = case column of
+      ColumnNoDict{} -> Nothing
+      ColumnDict{} -> Just $! DictionaryEncoding
+        { id=fromIntegral ix :: Int64
+        , indexType=TableInt{bitWidth=32,isSigned=True}
+        , isOrdered=False
+        }
   , children = mempty
   }
 
@@ -449,7 +455,7 @@ namedColumnToField NamedColumn{name,column} = Field
 makeSchema :: SmallArray (NamedColumn n) -> Schema
 makeSchema !namedColumns = Schema
   { endianness = 0
-  , fields = fmap namedColumnToField namedColumns
+  , fields = C.imap namedColumnToField  namedColumns
   }
 
 data EncodeDictOutput
