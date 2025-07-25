@@ -291,10 +291,14 @@ shortTextVectorToVariableBinary n texts = runST $ do
         Just fins -> pure (VariableBinary @n contents fins)
 
 data Column n
-  = forall m. ColumnDict
-      !(Nat# m) -- number of entries in dictionary
-      !(Vector m) -- the dictionary
-      !(Int32.Vector n (Fin32# m))
+  -- This definition of ColumnDict makes it possible to reference an older
+  -- dictionary without reencoding it. This is also acceptable as a target
+  -- for decoding. But decoding dictionaries is not yet supported.
+  = forall before m. ColumnDict
+      !(Nat# before) -- number of entries in dictionary
+      !(Nat# m) -- number of new entries for dictionary
+      !(Vector m) -- the new dictionary elements
+      !(Int32.Vector n (Fin32# (before + m)))
   | ColumnNoDict !(Vector n)
 
 data NamedColumn n = NamedColumn
@@ -319,7 +323,7 @@ namedColumnToMaskedVector NamedColumn{mask,column} = MaskedVector
   { mask
   , vector = case column of
       ColumnNoDict v -> v
-      ColumnDict _ _ ixs -> PrimitiveInt32 (Int32.fromFins ixs)
+      ColumnDict _ _ _ ixs -> PrimitiveInt32 (Int32.fromFins ixs)
   }
 
 makePayloads :: Nat# n -> SmallArray (MaskedVector n) -> UnliftedArray ByteArray
@@ -410,7 +414,7 @@ makePayloads !_ !cols = go 0 PayloadsNil
 columnToType :: Column n -> Type
 columnToType = \case
   ColumnNoDict v -> vectorToType v
-  ColumnDict _ v _ -> vectorToType v
+  ColumnDict _ _ v _ -> vectorToType v
 
 vectorToType :: Vector n -> Type
 vectorToType = \case
@@ -472,13 +476,15 @@ encodeOneDictionaryAtOffset ::
   -> EncodeDictOutput
 encodeOneDictionaryAtOffset !offset cmpr !ident NamedColumn{column} = case column of
   ColumnNoDict{} -> EncodeDictOutputNone
-  ColumnDict m dict _ ->
+  ColumnDict before m dict _ ->
     let PartiallyEncodedRecordBatch{recordBatch,body,bodyLength} = partiallyEncodeBatch m cmpr (C.singleton (MaskedVector (Bit.replicate m True# ) dict))
         encodedMessage = B.encode $ encodeMessage $ Message
           { header=MessageHeaderDictionaryBatch DictionaryBatch
             { id = ident
             , data_ = recordBatch
-            , isDelta = False -- delta dictionaries not currently supported
+            , isDelta = case Nat.demote# before of
+                0# -> False
+                _ -> True
             }
           , bodyLength
           }
@@ -908,4 +914,4 @@ makeRecordBatch !n cmpr buffers !cols = RecordBatch
   }
 
 makeNaiveDictionary :: Nat# n -> Vector n -> Column n
-makeNaiveDictionary n v = ColumnDict n v (Int32.ascendingFins n)
+makeNaiveDictionary n v = ColumnDict N0# n v (Int32.ascendingFins n)
