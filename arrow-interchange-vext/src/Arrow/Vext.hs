@@ -521,12 +521,15 @@ data EncDictState = EncDictState
 -- construct the footer. This 'Block' has the offset set to zero (we do
 -- not have enough data to compute it here), so the caller must reset that
 -- field.
+--
+-- Returns a builder with everything concatenated, a record-batch block,
+-- and a dictionary block.
 encodeBatchAtOffset ::
      Int64 -- ^ offset where the batch starts, needed for the block metadata
   -> Nat# n
   -> Compression
   -> SmallArray (NamedColumn n)
-  -> (Catenable.Builder, [Block])
+  -> (Catenable.Builder, Block, [Block])
 encodeBatchAtOffset !offset0 !n cmpr !namedColumns =
   let EncDictState offset1 reversedBlocks dictBuilder = encodeManyDictionaries offset0 cmpr namedColumns
       PartiallyEncodedRecordBatch{recordBatch,body,bodyLength} = partiallyEncodeBatch n cmpr (C.map namedColumnToMaskedVector namedColumns)
@@ -540,8 +543,8 @@ encodeBatchAtOffset !offset0 !n cmpr !namedColumns =
         , metaDataLength = fromIntegral @Int @Int32 (Catenable.length partB)
         , bodyLength
         }
-      blocks' = List.reverse (block : reversedBlocks)
-   in (dictBuilder <> partB <> body, blocks')
+      blocks' = List.reverse reversedBlocks
+   in (dictBuilder <> partB <> body, block, blocks')
 
 partiallyEncodeBatch :: 
      Nat# n
@@ -568,12 +571,12 @@ encode :: Nat# n -> Compression -> SmallArray (NamedColumn n) -> Catenable.Build
 encode !n cmpr !namedColumns = 
   let prelude = encodePreludeAndSchema schema
       lenPrelude = fromIntegral (Catenable.length prelude) :: Int64
-      (messages, blocks) = encodeBatchAtOffset lenPrelude n cmpr namedColumns
+      (messages, recordBatchBlock, dictBlocks) = encodeBatchAtOffset lenPrelude n cmpr namedColumns
    in prelude
       <>
       messages
       <>
-      encodeFooterAndEpilogue schema (C.fromList blocks)
+      encodeFooterAndEpilogue schema (C.singleton recordBatchBlock) (C.fromList dictBlocks)
   where
   schema = makeSchema namedColumns
 

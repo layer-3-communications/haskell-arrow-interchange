@@ -156,9 +156,13 @@ encodePreludeAndSchema !schema =
   encodedSchemaMessagePadding = computePadding64 encodedSchemaMessageLength
 
 -- | Encode the footer and the epilogue.
-encodeFooterAndEpilogue :: Schema -> SmallArray Block -> Catenable.Builder
-encodeFooterAndEpilogue !schema !blocks =
-  let encodedFooter = B.encode (encodeFooter (makeFooter blocks schema))
+encodeFooterAndEpilogue ::
+     Schema
+  -> PrimArray Block -- record batch blocks
+  -> PrimArray Block -- dictionary blocks
+  -> Catenable.Builder
+encodeFooterAndEpilogue !schema !blocks !dictBlocks =
+  let encodedFooter = B.encode (encodeFooter (makeFooterPrim blocks dictBlocks schema))
       encodedFooterLength = Catenable.length encodedFooter
    in continuation
       <>
@@ -179,17 +183,17 @@ eos = Catenable.bytes (Bytes.replicate 4 0x00)
 asciiArrow1 :: Catenable.Builder
 asciiArrow1 = Catenable.bytes (Exts.fromList [0x41 :: Word8,0x52,0x52,0x4f,0x57,0x31])
 
-makeFooter :: SmallArray Block -> Schema -> Footer
-makeFooter !blocks !schema = Footer
+makeFooter :: SmallArray Block -> SmallArray Block -> Schema -> Footer
+makeFooter !blocks !dictBlocks !schema = Footer
   { schema = schema
-  , dictionaries = mempty
+  , dictionaries = Contiguous.convert dictBlocks
   , recordBatches = Contiguous.convert blocks
   }
 
-makeFooterPrim :: PrimArray Block -> Schema -> Footer
-makeFooterPrim !blocks !schema = Footer
+makeFooterPrim :: PrimArray Block -> PrimArray Block -> Schema -> Footer
+makeFooterPrim !blocks !dictBlocks !schema = Footer
   { schema = schema
-  , dictionaries = mempty
+  , dictionaries = dictBlocks
   , recordBatches = blocks
   }
 
