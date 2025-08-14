@@ -13,6 +13,7 @@ module ArrowSchema
   , TableFixedSizeList(..)
   , TableTimestamp(..)
   , TableDate(..)
+  , TableMap(..)
   , Buffer(..)
   , TimeUnit(..)
   , DateUnit(..)
@@ -123,7 +124,8 @@ data Type
   | Date !TableDate
   | Duration !TimeUnit
   | Struct
-  | List
+  | List -- tag 12
+  | Map !TableMap -- tag 17
   deriving (Show)
 
 newtype TableFixedSizeBinary = TableFixedSizeBinary
@@ -132,6 +134,10 @@ newtype TableFixedSizeBinary = TableFixedSizeBinary
 
 newtype TableFixedSizeList = TableFixedSizeList
   { listSize :: Int32
+  } deriving (Show)
+
+newtype TableMap = TableMap
+  { keysSorted :: Bool
   } deriving (Show)
 
 data TableInt = TableInt
@@ -190,6 +196,11 @@ encodeTableInt TableInt{bitWidth,isSigned} = B.Object $ Exts.fromList
   , B.boolean isSigned
   ]
 
+encodeTableMap :: TableMap -> B.Object
+encodeTableMap TableMap{keysSorted} = B.Object $ Exts.fromList
+  [ B.boolean keysSorted
+  ]
+
 encodeTableTimestamp :: TableTimestamp -> B.Object
 encodeTableTimestamp TableTimestamp{unit=TimeUnit w,timezone} =
   B.Object $ Exts.fromList
@@ -226,6 +237,7 @@ encodeType = \case
   Duration (TimeUnit w) -> B.Union{tag=18,object=B.Object $ Exts.fromList [B.unsigned16 w]}
   List -> B.Union{tag=12,object=B.Object mempty}
   Struct -> B.Union{tag=13,object=B.Object mempty}
+  Map table -> B.Union{tag=17,object=encodeTableMap table}
 
 parseType :: P.UnionParser Type
 parseType = P.constructUnionFromList

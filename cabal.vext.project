@@ -4,7 +4,7 @@ packages: ./arrow-interchange-common ./arrow-interchange-vext
 source-repository-package
   type: git
   location: https://github.com/andrewthad/vext.git
-  tag: 91f613c5d5f617585c7660802a1ee2e3df0bbc1a
+  tag: 75f3a4a351900ade31c945bcf145a8fc020aea31
 
 source-repository-package
   type: git

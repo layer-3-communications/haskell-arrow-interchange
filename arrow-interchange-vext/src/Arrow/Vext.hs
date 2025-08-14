@@ -1,19 +1,19 @@
 {-# language DataKinds #-}
-{-# language UnboxedTuples #-}
-{-# language MultiWayIf #-}
+{-# language DuplicateRecordFields #-}
 {-# language LambdaCase #-}
 {-# language MagicHash #-}
-{-# language DuplicateRecordFields #-}
+{-# language MultiWayIf #-}
+{-# language OverloadedRecordDot #-}
 {-# language PatternSynonyms #-}
 {-# language TypeApplications #-}
 {-# language TypeOperators #-}
-{-# language OverloadedRecordDot #-}
-{-# language PatternSynonyms #-}
+{-# language UnboxedTuples #-}
 
 module Arrow.Vext
   ( Column(..)
   , Vector(..)
   , VariableBinary(..)
+  , ListKeyValue(..)
   , NamedColumn(..)
   , NamedColumns(..)
   , Compression(..)
@@ -55,9 +55,10 @@ import Data.Primitive (SmallArray,ByteArray(ByteArray),PrimArray)
 import Data.Primitive.Unlifted.Array (UnliftedArray)
 import Data.Text (Text)
 import Data.Unlifted (Bool#, pattern True#, ShortText#)
+import Data.Text.Short.Unlifted (pattern Empty#)
 import Data.Unlifted (PrimArray#(PrimArray#), Word128#)
 import Data.Word (Word32)
-import GHC.Exts ((+#))
+import GHC.Exts ((+#),RuntimeRep,TYPE)
 import GHC.Exts (Int8#,Int16#,Int32#,Int64#,Word64#,Word32#,Word16#,Word8#)
 import GHC.Int (Int64(I64#),Int(I#))
 import GHC.TypeNats (Nat, type (+))
@@ -89,6 +90,7 @@ import qualified Vector.Int32 as Int32
 import qualified Vector.Int64 as Int64
 import qualified Vector.Int8 as Int8
 import qualified Vector.Unlifted as Unlifted
+import qualified Vector.Lifted as Lifted
 import qualified Vector.Unlifted.ShortText
 import qualified Vector.Word16 as Word16
 import qualified Vector.Word32 as Word32
@@ -117,6 +119,7 @@ data Vector n
       !(Word128.Vector n Word128#)
   | VariableBinaryUtf8
       !(VariableBinary n)
+  | Map_ !(ListKeyValue n)
   | TimestampUtcNanosecond
       !(Int64.Vector n Int64#)
   | TimestampUtcMicrosecond
@@ -222,6 +225,20 @@ data VariableBinary (n :: GHC.Nat) = forall (m :: GHC.Nat). VariableBinary
   -- last element should be m.
   !(Int32.Vector (n + 1) (Fin32# (m + 1)))
 
+data ScalarMapUtf8Utf8 = forall (n :: GHC.Nat). ScalarMapUtf8Utf8
+  !(Nat# n)
+  !(Unlifted.Vector n ShortText#)
+  !(Unlifted.Vector n ShortText#)
+
+data ListKeyValue (n :: GHC.Nat) = forall (m :: GHC.Nat). ListKeyValue
+  !(Nat# m)
+  !(Column m) -- keys
+  !(Column m) -- values
+  -- Invariant unenforced by type system: these finite numbers must
+  -- be in nondescending order. The first element should be zero, and the
+  -- last element should be m.
+  !(Int32.Vector (n + 1) (Fin32# (m + 1)))
+
 -- data ListView (elements :: GHC.Nat -> Type) (n :: GHC.Nat) = forall (m :: GHC.Nat). ListView
 --   { offsets :: !(Int32.Vector n (Fin32# m))
 --   , sizes :: !(Int32.Vector n _)
@@ -270,17 +287,42 @@ appendVarBinIxs m n k j ixsA ixsB = runST $ do
       Int32.unsafeFreeze dst
     _ -> errorWithoutStackTrace "appendVarBinIxs: bound got too big when appending"
 
+combineScalarMapUtf8Utf8 :: Nat# n -> Lifted.Vector n ScalarMapUtf8Utf8 -> ListKeyValue n
+combineScalarMapUtf8Utf8 n !maps = runST $ do
+  outerIxs <- Int32.initialized (Nat.succ# n) (Exts.intToInt32# 0# )
+  -- Note: total refers to the total number of keys, which is the same as
+  -- the total number of values.
+  I# total# <- Fin.ascendM# n (0 :: Int) $ \fin !offset@(I# offset#) -> do
+    case Lifted.index maps fin of
+      ScalarMapUtf8Utf8 k _ _ -> do
+        let !fin' = Fin.weakenR# @_ @1 fin
+        Int32.write outerIxs fin' (Exts.intToInt32# offset#)
+        pure (offset + I# (Nat.demote# k))
+  Int32.write outerIxs (Fin.greatest# n) (Exts.intToInt32# total#)
+  outerIxsFrozen <- Int32.unsafeFreeze outerIxs
+  Nat.with# total# $ \m -> do
+    keys <- Unlifted.initialized m Empty#
+    values <- Unlifted.initialized m Empty#
+    Fin.ascendM_# n $ \fin -> case Lifted.index maps fin of
+      ScalarMapUtf8Utf8 sz ks vs -> do
+        pure ()
+    !keys' <- Unlifted.unsafeFreeze keys
+    let keysColumn = ColumnNoDict $! VariableBinaryUtf8 $! shortTextVectorToVariableBinary m keys'
+    !values' <- Unlifted.unsafeFreeze values
+    let valuesColumn = ColumnNoDict $! VariableBinaryUtf8 $! shortTextVectorToVariableBinary m values'
+    case Int32.toFins (Nat.succ# m) (Nat.succ# n) outerIxsFrozen of
+      Just outerIxsFrozen' -> pure $! ListKeyValue m keysColumn valuesColumn outerIxsFrozen'
+      Nothing -> errorWithoutStackTrace "combineScalarMapUtf8Utf8: implementation mistake"
+
 shortTextVectorToVariableBinary :: forall n. Nat# n -> Unlifted.Vector n ShortText# -> VariableBinary n
 shortTextVectorToVariableBinary n texts = runST $ do
   dst <- Int32.initialized (Nat.succ# n) (Exts.intToInt32# 0# )
-  I# total# <- Fin.ascendM (Nat.lift n) (0 :: Int) $ \fin@(Fin ix lt) !offset@(I# offset#) -> do
-    let val = Unlifted.index texts (Fin.unlift fin)
-    let fin' = Fin ix (Lt.weakenR @1 lt)
-    Int32.write dst (Fin.unlift fin') (Exts.intToInt32# offset#)
+  I# total# <- Fin.ascendM# n (0 :: Int) $ \fin !offset@(I# offset#) -> do
+    let !val = Unlifted.index texts fin
+    let !fin' = Fin.weakenR# @_ @1 fin
+    Int32.write dst fin' (Exts.intToInt32# offset#)
     pure (offset + SBS.length (TS.toShortByteString (Data.Text.Short.Unlifted.lift val)))
-  Int32.write dst
-    (Fin.unlift (Fin (Nat.lift n) (Lt.incrementL @n Lt.zero)))
-    (Exts.intToInt32# total#)
+  Int32.write dst (Fin.greatest# n) (Exts.intToInt32# total#)
   dst' <- Int32.unsafeFreeze dst
   let !concatenation = Vector.Unlifted.ShortText.concat n texts
   case TS.toShortByteString (Data.Text.Short.Unlifted.lift concatenation) of
@@ -326,90 +368,64 @@ namedColumnToMaskedVector NamedColumn{mask,column} = MaskedVector
       ColumnDict _ _ _ ixs -> PrimitiveInt32 (Int32.fromFins ixs)
   }
 
+-- consListKeyValue :: ByteArray -> ListKeyValue n -> Payloads -> Payloads
+-- consListKeyValue !exposedMask (ListKeyValue keys vals offs) !acc =
+--     PayloadsCons exposed
+--   $ PayloadsCons (case Int32.expose offs of PrimArray# x -> x)
+--   $ PayloadsCons exposedMask
+--   $ acc
+--   where
+--   foo = Bit.replicate m True#
+
 makePayloads :: Nat# n -> SmallArray (MaskedVector n) -> UnliftedArray ByteArray
-makePayloads !_ !cols = go 0 PayloadsNil
-  where
-  go :: Int -> Payloads -> UnliftedArray ByteArray
-  go !ix !acc = if ix < PM.sizeofSmallArray cols
-    then
-      let MaskedVector{mask,vector} = PM.indexSmallArray cols ix
-          finishPrimitive !exposed = case Bit.expose mask of
-            PrimArray# b -> 
-              let exposedMask = ByteArray b
-                  acc' = consPrimitive exposed exposedMask acc
-               in go (ix + 1) acc'
-       in case vector of
-            VariableBinaryUtf8 (VariableBinary (ByteArrayN b) szs) ->
-              let !acc' = consVariableBinary b
-                    (ByteArray (case Bit.expose mask of PrimArray# x -> x))
-                    (ByteArray (case Int32.expose szs of PrimArray# x -> x))
-                    acc
-               in go (ix + 1) acc'
-            PrimitiveInt8 v -> case Int8.expose v of
-              PrimArray# b ->
-                let b' = ByteArray b
-                 in finishPrimitive b'
-            PrimitiveInt16 v -> case Int16.expose v of
-              PrimArray# b ->
-                let b' = ByteArray b
-                 in finishPrimitive b'
-            PrimitiveInt32 v -> case Int32.expose v of
-              PrimArray# b ->
-                let b' = ByteArray b
-                 in finishPrimitive b'
-            PrimitiveWord32 v -> case Word32.expose v of
-              PrimArray# b ->
-                let b' = ByteArray b
-                 in finishPrimitive b'
-            PrimitiveWord64 v -> case Word64.expose v of
-              PrimArray# b ->
-                let b' = ByteArray b
-                 in finishPrimitive b'
-            FixedSizeBinary16 v -> case Word128.expose v of
-              PrimArray# b ->
-                let b' = ByteArray b
-                 in finishPrimitive b'
-            PrimitiveWord8 v -> case Word8.expose v of
-              PrimArray# b ->
-                let b' = ByteArray b
-                 in finishPrimitive b'
-            PrimitiveWord16 v -> case Word16.expose v of
-              PrimArray# b ->
-                let b' = ByteArray b
-                 in finishPrimitive b'
-            PrimitiveInt64 v -> case Int64.expose v of
-              PrimArray# b ->
-                let b' = ByteArray b
-                 in finishPrimitive b'
-            TimestampUtcNanosecond v -> case Int64.expose v of
-              PrimArray# b ->
-                let b' = ByteArray b
-                 in finishPrimitive b'
-            TimestampUtcMicrosecond v -> case Int64.expose v of
-              PrimArray# b ->
-                let b' = ByteArray b
-                 in finishPrimitive b'
-            TimestampUtcMillisecond v -> case Int64.expose v of
-              PrimArray# b ->
-                let b' = ByteArray b
-                 in finishPrimitive b'
-            TimestampUtcSecond v -> case Int64.expose v of
-              PrimArray# b ->
-                let b' = ByteArray b
-                 in finishPrimitive b'
-            DurationMillisecond v -> case Int64.expose v of
-              PrimArray# b ->
-                let b' = ByteArray b
-                 in finishPrimitive b'
-            Date32 v -> case Int32.expose v of
-              PrimArray# b ->
-                let b' = ByteArray b
-                 in finishPrimitive b'
-            Date64 v -> case Int64.expose v of
-              PrimArray# b ->
-                let b' = ByteArray b
-                 in finishPrimitive b'
-    else payloadsToArray acc
+makePayloads !_ !cols =
+  payloadsToArray (C.foldl' (\acc v -> pushMaskedVector v acc) PayloadsNil cols)
+
+pushMaskedVector :: MaskedVector n -> Payloads -> Payloads
+pushMaskedVector MaskedVector{mask,vector} !acc = case Bit.expose mask of
+  PrimArray# b -> 
+    let !exposedMask = ByteArray b
+        !acc' = PayloadsCons exposedMask acc
+     in pushVector vector acc'
+
+pushPrimArray# :: forall (r :: RuntimeRep) (a :: TYPE r). PrimArray# a -> Payloads -> Payloads
+{-# inline pushPrimArray# #-}
+pushPrimArray# (PrimArray# x) !acc = PayloadsCons (ByteArray x) acc
+
+pushColumn :: Column m -> Payloads -> Payloads
+pushColumn c !acc = case c of
+  ColumnNoDict v -> pushVector v acc
+  ColumnDict _ _ _ ixs -> pushPrimArray# (Int32.expose ixs) acc
+
+pushVector :: Vector n -> Payloads -> Payloads
+pushVector vector !acc = case vector of
+  Map_ (ListKeyValue _ keys values ixs) ->
+      pushColumn keys
+    $ pushColumn values
+    $ pushPrimArray# (Int32.expose ixs)
+    $ acc
+  VariableBinaryUtf8 (VariableBinary (ByteArrayN b) szs) ->
+    let !acc' =
+            PayloadsCons b
+          $ PayloadsCons (ByteArray (case Int32.expose szs of PrimArray# x -> x))
+          $ acc
+     in acc'
+  PrimitiveInt8 v -> pushPrimArray# (Int8.expose v) acc
+  PrimitiveInt16 v -> pushPrimArray# (Int16.expose v) acc
+  PrimitiveInt32 v -> pushPrimArray# (Int32.expose v) acc
+  PrimitiveWord32 v -> pushPrimArray# (Word32.expose v) acc
+  PrimitiveWord64 v -> pushPrimArray# (Word64.expose v) acc
+  FixedSizeBinary16 v -> pushPrimArray# (Word128.expose v) acc
+  PrimitiveWord8 v -> pushPrimArray# (Word8.expose v) acc
+  PrimitiveWord16 v -> pushPrimArray# (Word16.expose v) acc
+  PrimitiveInt64 v -> pushPrimArray# (Int64.expose v) acc
+  TimestampUtcNanosecond v -> pushPrimArray# (Int64.expose v) acc
+  TimestampUtcMicrosecond v -> pushPrimArray# (Int64.expose v) acc
+  TimestampUtcMillisecond v -> pushPrimArray# (Int64.expose v) acc
+  TimestampUtcSecond v -> pushPrimArray# (Int64.expose v) acc
+  DurationMillisecond v -> pushPrimArray# (Int64.expose v) acc
+  Date32 v -> pushPrimArray# (Int32.expose v) acc
+  Date64 v -> pushPrimArray# (Int64.expose v) acc
 
 columnToType :: Column n -> Type
 columnToType = \case
@@ -440,33 +456,51 @@ vectorToType = \case
   Date64{} -> Date (TableDate DateMillisecond)
   VariableBinaryUtf8{} -> Utf8
 
-namedColumnToField :: Int -> NamedColumn n -> Field
-namedColumnToField !ix NamedColumn{name,column} = Field
+-- We reserve two dictionary IDs for each field so that maps can have
+-- separate dictionaries for their keys and values.
+indexToBaseDictId :: Int -> Int64
+{-# inline indexToBaseDictId #-}
+indexToBaseDictId i = 2 * fromIntegral i
+
+-- Name passed separately
+columnToField :: Text -> Int64 -> Column n -> Field
+columnToField name !dictId column = Field
   { name = name
   , nullable = True
   , type_ = columnToType column
   , dictionary = case column of
       ColumnNoDict{} -> Nothing
       ColumnDict{} -> Just $! DictionaryEncoding
-        { id=fromIntegral ix :: Int64
+        { id=dictId
         , indexType=TableInt{bitWidth=32,isSigned=True}
         , isOrdered=False
         }
-  , children = mempty
+  , children = case column of
+      ColumnNoDict (Map_ (ListKeyValue _ k v _)) -> C.singleton
+        ( Field
+          { name=T.pack "entries",nullable=True,type_=Struct,dictionary=Nothing
+          , children=C.doubleton (columnToField (T.pack "key") dictId k) (columnToField (T.pack "value") (dictId + 1) v)
+          }
+        )
+      ColumnDict _ _ Map_{} _ -> errorWithoutStackTrace "namedColumnToField: cannot dictionary compress a map yet"
+      _ -> mempty
   }
+
+namedColumnToField :: Int64 -> NamedColumn n -> Field
+namedColumnToField !ix NamedColumn{name,column} = columnToField name ix column
 
 -- | Convert named columns to a description of the schema.
 makeSchema :: SmallArray (NamedColumn n) -> Schema
 makeSchema !namedColumns = Schema
   { endianness = 0
-  , fields = C.imap namedColumnToField  namedColumns
+  , fields = C.imap (\ix -> namedColumnToField (indexToBaseDictId ix)) namedColumns
   }
 
 data EncodeDictOutput
   = EncodeDictOutputNone -- No dictionary was needed
   | EncodeDictOutputSome
       !Catenable.Builder
-      !Block -- offset is zero and must be replaced
+      !Block
 
 encodeOneDictionaryAtOffset ::
      Int64 -- ^ Offset for block metadata
@@ -504,7 +538,7 @@ encodeManyDictionaries ::
   -> EncDictState
 encodeManyDictionaries !offset0 cmpr = C.ifoldl'
   (\(EncDictState offset blocks builder) ix nc ->
-    case encodeOneDictionaryAtOffset offset cmpr (fromIntegral ix) nc of
+    case encodeOneDictionaryAtOffset offset cmpr (indexToBaseDictId ix) nc of
       EncodeDictOutputNone -> EncDictState offset blocks builder
       EncodeDictOutputSome builderNext block ->
         let size = fromIntegral (Catenable.length builderNext) :: Int64
@@ -903,12 +937,31 @@ makeRecordBatch ::
   -> RecordBatch
 makeRecordBatch !n cmpr buffers !cols = RecordBatch
   { length = fromIntegral (I# (Nat.demote# n))
-  , nodes = C.map'
-      (\MaskedVector{mask} -> FieldNode
-        { length=fromIntegral (I# (Nat.demote# n))
-        , nullCount=fromIntegral @Int @Int64 (I# (Nat.demote# n) - naivePopCount n mask)
-        }
-      ) cols
+  , nodes = runST $ do
+      let sz = PM.sizeofSmallArray cols
+      dst <- PM.newPrimArray (sz * 4)
+      let go !srcIx !dstIx = if srcIx < sz
+            then do
+              let MaskedVector{mask,vector} = PM.indexSmallArray cols srcIx
+              let !node = FieldNode
+                    { length=fromIntegral (I# (Nat.demote# n))
+                    , nullCount=fromIntegral @Int @Int64 (I# (Nat.demote# n) - naivePopCount n mask)
+                    }
+              PM.writePrimArray dst dstIx node
+              dstIx' <- case vector of
+                -- An uncompressed map (text keys and text values) uses four nodes
+                Map_ (ListKeyValue m _ _ _) -> do
+                  -- This library does not support nullable keys or values in a Map.
+                  PM.writePrimArray dst (dstIx+1) FieldNode {length=fromIntegral (I# (Nat.demote# m)), nullCount=0 }
+                  PM.writePrimArray dst (dstIx+2) FieldNode {length=fromIntegral (I# (Nat.demote# m)), nullCount=0 }
+                  PM.writePrimArray dst (dstIx+3) FieldNode {length=fromIntegral (I# (Nat.demote# m)), nullCount=0 }
+                  pure (dstIx + 4)
+                _ -> pure (dstIx + 1)
+              go (srcIx + 1) dstIx'
+            else pure dstIx
+      finalSize <- go 0 0
+      PM.shrinkMutablePrimArray dst finalSize
+      PM.unsafeFreezePrimArray dst
   , buffers = C.convert buffers
   , compression = marshallCompression cmpr
   }

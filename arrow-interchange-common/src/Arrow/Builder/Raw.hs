@@ -26,6 +26,7 @@ module Arrow.Builder.Raw
   , TableFixedSizeList(..)
   , TableTimestamp(..)
   , TableDate(..)
+  , TableMap(..)
   , Buffer(..)
   , TimeUnit(..)
   , DateUnit(..)
