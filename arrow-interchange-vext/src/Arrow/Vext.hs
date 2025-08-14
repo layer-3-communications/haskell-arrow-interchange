@@ -5,6 +5,8 @@
 {-# language MultiWayIf #-}
 {-# language OverloadedRecordDot #-}
 {-# language PatternSynonyms #-}
+{-# language RankNTypes #-}
+{-# language ScopedTypeVariables #-}
 {-# language TypeApplications #-}
 {-# language TypeOperators #-}
 {-# language UnboxedTuples #-}
@@ -14,6 +16,7 @@ module Arrow.Vext
   , Vector(..)
   , VariableBinary(..)
   , ListKeyValue(..)
+  , ScalarMapUtf8Utf8(..)
   , NamedColumn(..)
   , NamedColumns(..)
   , Compression(..)
@@ -31,6 +34,8 @@ module Arrow.Vext
   , encodeFooterAndEpilogue
     -- * Variable Binary Helper
   , shortTextVectorToVariableBinary
+    -- * Map Helper
+  , combineScalarMapUtf8Utf8
     -- * Dictionaries
   , makeNaiveDictionary
   ) where
@@ -62,6 +67,7 @@ import GHC.Exts ((+#),RuntimeRep,TYPE)
 import GHC.Exts (Int8#,Int16#,Int32#,Int64#,Word64#,Word32#,Word16#,Word8#)
 import GHC.Int (Int64(I64#),Int(I#))
 import GHC.TypeNats (Nat, type (+))
+import Control.Monad.ST (ST)
 
 import qualified Arithmetic.Fin as Fin
 import qualified Arithmetic.Lt as Lt
@@ -287,32 +293,47 @@ appendVarBinIxs m n k j ixsA ixsB = runST $ do
       Int32.unsafeFreeze dst
     _ -> errorWithoutStackTrace "appendVarBinIxs: bound got too big when appending"
 
-combineScalarMapUtf8Utf8 :: Nat# n -> Lifted.Vector n ScalarMapUtf8Utf8 -> ListKeyValue n
-combineScalarMapUtf8Utf8 n !maps = runST $ do
-  outerIxs <- Int32.initialized (Nat.succ# n) (Exts.intToInt32# 0# )
-  -- Note: total refers to the total number of keys, which is the same as
-  -- the total number of values.
-  I# total# <- Fin.ascendM# n (0 :: Int) $ \fin !offset@(I# offset#) -> do
-    case Lifted.index maps fin of
-      ScalarMapUtf8Utf8 k _ _ -> do
-        let !fin' = Fin.weakenR# @_ @1 fin
-        Int32.write outerIxs fin' (Exts.intToInt32# offset#)
-        pure (offset + I# (Nat.demote# k))
-  Int32.write outerIxs (Fin.greatest# n) (Exts.intToInt32# total#)
-  outerIxsFrozen <- Int32.unsafeFreeze outerIxs
-  Nat.with# total# $ \m -> do
-    keys <- Unlifted.initialized m Empty#
-    values <- Unlifted.initialized m Empty#
-    Fin.ascendM_# n $ \fin -> case Lifted.index maps fin of
-      ScalarMapUtf8Utf8 sz ks vs -> do
-        pure ()
-    !keys' <- Unlifted.unsafeFreeze keys
-    let keysColumn = ColumnNoDict $! VariableBinaryUtf8 $! shortTextVectorToVariableBinary m keys'
-    !values' <- Unlifted.unsafeFreeze values
-    let valuesColumn = ColumnNoDict $! VariableBinaryUtf8 $! shortTextVectorToVariableBinary m values'
-    case Int32.toFins (Nat.succ# m) (Nat.succ# n) outerIxsFrozen of
-      Just outerIxsFrozen' -> pure $! ListKeyValue m keysColumn valuesColumn outerIxsFrozen'
-      Nothing -> errorWithoutStackTrace "combineScalarMapUtf8Utf8: implementation mistake"
+combineScalarMapUtf8Utf8 :: forall n. Nat# n -> Lifted.Vector n ScalarMapUtf8Utf8 -> ListKeyValue n
+combineScalarMapUtf8Utf8 n !maps = runST action
+  where
+  action :: forall s. ST s (ListKeyValue n)
+  action = do
+    outerIxs <- Int32.initialized (Nat.succ# n) (Exts.intToInt32# 0# )
+    -- Note: total refers to the total number of keys, which is the same as
+    -- the total number of values.
+    I# total# <- Fin.ascendM# n (0 :: Int) $ \fin !offset@(I# offset#) -> do
+      case Lifted.index maps fin of
+        ScalarMapUtf8Utf8 k _ _ -> do
+          let !fin' = Fin.weakenR# @_ @1 fin
+          Int32.write outerIxs fin' (Exts.intToInt32# offset#)
+          pure (offset + I# (Nat.demote# k))
+    Int32.write outerIxs (Fin.greatest# n) (Exts.intToInt32# total#)
+    outerIxsFrozen <- Int32.unsafeFreeze outerIxs
+    Nat.with# total# $ \m -> do
+      keys <- Unlifted.initialized m Empty#
+      values <- Unlifted.initialized m Empty#
+      let go :: forall (p :: Nat) (q :: Nat). Nat# p -> Nat# q -> ST s ()
+          go !ix !listIx = case ix <?# n of
+            JustVoid# lt -> do
+              let !fin = Fin.construct# lt ix
+              case Lifted.index maps fin of
+                ScalarMapUtf8Utf8 sz ks vs -> do
+                  let !end = Nat.plus# listIx sz
+                  case end <=?# m of
+                    JustVoid# lte -> do
+                      Unlifted.copySlice lte (Lte.reflexive# (# #)) keys listIx ks N0# sz
+                      Unlifted.copySlice lte (Lte.reflexive# (# #)) values listIx vs N0# sz
+                      go @(p + 1) (Nat.succ# ix) end
+                    _ -> errorWithoutStackTrace "combineScalarMapUtf8Utf8: implementation mistake"
+            _ -> pure ()
+      go N0# N0#
+      !keys' <- Unlifted.unsafeFreeze keys
+      let keysColumn = ColumnNoDict $! VariableBinaryUtf8 $! shortTextVectorToVariableBinary m keys'
+      !values' <- Unlifted.unsafeFreeze values
+      let valuesColumn = ColumnNoDict $! VariableBinaryUtf8 $! shortTextVectorToVariableBinary m values'
+      case Int32.toFins (Nat.succ# m) (Nat.succ# n) outerIxsFrozen of
+        Just outerIxsFrozen' -> pure $! ListKeyValue m keysColumn valuesColumn outerIxsFrozen'
+        Nothing -> errorWithoutStackTrace "combineScalarMapUtf8Utf8: implementation mistake"
 
 shortTextVectorToVariableBinary :: forall n. Nat# n -> Unlifted.Vector n ShortText# -> VariableBinary n
 shortTextVectorToVariableBinary n texts = runST $ do
