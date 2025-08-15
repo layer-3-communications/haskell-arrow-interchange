@@ -324,7 +324,7 @@ combineScalarMapUtf8Utf8 n !maps = runST action
                       Unlifted.copySlice lte (Lte.reflexive# (# #)) keys listIx ks N0# sz
                       Unlifted.copySlice lte (Lte.reflexive# (# #)) values listIx vs N0# sz
                       go @(p + 1) (Nat.succ# ix) end
-                    _ -> errorWithoutStackTrace "combineScalarMapUtf8Utf8: implementation mistake"
+                    _ -> errorWithoutStackTrace "combineScalarMapUtf8Utf8: implementation mistake a"
             _ -> pure ()
       go N0# N0#
       !keys' <- Unlifted.unsafeFreeze keys
@@ -333,7 +333,7 @@ combineScalarMapUtf8Utf8 n !maps = runST action
       let valuesColumn = ColumnNoDict $! VariableBinaryUtf8 $! shortTextVectorToVariableBinary m values'
       case Int32.toFins (Nat.succ# m) (Nat.succ# n) outerIxsFrozen of
         Just outerIxsFrozen' -> pure $! ListKeyValue m keysColumn valuesColumn outerIxsFrozen'
-        Nothing -> errorWithoutStackTrace "combineScalarMapUtf8Utf8: implementation mistake"
+        Nothing -> errorWithoutStackTrace "combineScalarMapUtf8Utf8: implementation mistake b"
 
 shortTextVectorToVariableBinary :: forall n. Nat# n -> Unlifted.Vector n ShortText# -> VariableBinary n
 shortTextVectorToVariableBinary n texts = runST $ do
