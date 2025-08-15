@@ -630,7 +630,7 @@ partiallyEncodeBatch !n cmpr !maskedVectors =
   let payloads = makePayloads n maskedVectors :: UnliftedArray ByteArray
       (body, buffers) = case cmpr of
         None -> encodePayloadsUncompressed payloads
-        Lz4 -> encodePayloadsLz4 payloads
+        Lz4 level -> encodePayloadsLz4 level payloads
       bodyLength = Catenable.length body
       recordBatch = makeRecordBatch n cmpr buffers maskedVectors
    in PartiallyEncodedRecordBatch recordBatch body (fromIntegral bodyLength :: Int64)

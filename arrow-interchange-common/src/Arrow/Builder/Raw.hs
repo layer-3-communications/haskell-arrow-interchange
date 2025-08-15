@@ -99,7 +99,7 @@ data Payloads
 
 data Compression
   = None
-  | Lz4
+  | Lz4 !Int -- LZ4 HC compression level (default is 9)
 
 computePadding64 :: Int -> Int
 {-# inline computePadding64 #-}
@@ -234,11 +234,12 @@ encodePayloadsUncompressed payloads =
 -- LZ4 frame cannot have compressed blocks whose uncompressed contents are
 -- larger than 4MiB, so we also disable compression on these large payloads.
 encodePayloadsLz4 ::
-     UnliftedArray ByteArray
+     Int
+  -> UnliftedArray ByteArray
   -> ( Catenable.Builder
      , PrimArray Buffer
      )
-encodePayloadsLz4 payloads =
+encodePayloadsLz4 !compressionLevel !payloads =
   let EncodePayloadState{builder=builderZ,buffers=buffersZ} = C.foldl'
         (\EncodePayloadState{position,builder,buffers} payload ->
           let payloadSize = PM.sizeofByteArray payload
@@ -267,7 +268,7 @@ encodePayloadsLz4 payloads =
                         , buffers = buffers'
                         }
                 else
-                  let compressed = Lz4.compressHighlyU 9 (Bytes.fromByteArray payload)
+                  let compressed = Lz4.compressHighlyU compressionLevel (Bytes.fromByteArray payload)
                       padding = computePadding8 (PM.sizeofByteArray compressed)
                       builder' =
                         builder
@@ -320,7 +321,7 @@ encodePartB encodedRecordBatch =
 marshallCompression :: Compression -> Maybe BodyCompression
 marshallCompression = \case
   None -> Nothing
-  Lz4 -> Just BodyCompression{codec=Lz4Frame}
+  Lz4{} -> Just BodyCompression{codec=Lz4Frame}
 
 payloadsToArray :: Payloads -> UnliftedArray ByteArray
 {-# noinline payloadsToArray #-}
