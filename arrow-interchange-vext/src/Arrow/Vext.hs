@@ -484,11 +484,17 @@ indexToBaseDictId :: Int -> Int64
 {-# inline indexToBaseDictId #-}
 indexToBaseDictId i = 2 * fromIntegral i
 
--- Name passed separately
 columnToField :: Text -> Int64 -> Column n -> Field
-columnToField name !dictId column = Field
+columnToField = columnToField' True
+
+columnToNonnullableField :: Text -> Int64 -> Column n -> Field
+columnToNonnullableField = columnToField' False
+
+-- Name passed separately
+columnToField' :: Bool -> Text -> Int64 -> Column n -> Field
+columnToField' nullable name !dictId column = Field
   { name = name
-  , nullable = True
+  , nullable = nullable
   , type_ = columnToType column
   , dictionary = case column of
       ColumnNoDict{} -> Nothing
@@ -501,7 +507,7 @@ columnToField name !dictId column = Field
       ColumnNoDict (Map_ (ListKeyValue _ k v _)) -> C.singleton
         ( Field
           { name=T.pack "entries",nullable=False,type_=Struct,dictionary=Nothing
-          , children=C.doubleton (columnToField (T.pack "key") dictId k) (columnToField (T.pack "value") (dictId + 1) v)
+          , children=C.doubleton (columnToNonnullableField (T.pack "key") dictId k) (columnToNonnullableField (T.pack "value") (dictId + 1) v)
           }
         )
       ColumnDict _ _ Map_{} _ -> errorWithoutStackTrace "namedColumnToField: cannot dictionary compress a map yet"
