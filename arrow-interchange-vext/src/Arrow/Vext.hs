@@ -413,6 +413,10 @@ pushPrimArray# :: forall (r :: RuntimeRep) (a :: TYPE r). PrimArray# a -> Payloa
 {-# inline pushPrimArray# #-}
 pushPrimArray# (PrimArray# x) !acc = PayloadsCons (ByteArray x) acc
 
+pushEmpty :: Payloads -> Payloads
+{-# inline pushEmpty #-}
+pushEmpty !acc = PayloadsCons mempty acc
+
 pushColumn :: Column m -> Payloads -> Payloads
 pushColumn c !acc = case c of
   ColumnNoDict v -> pushVector v acc
@@ -421,9 +425,12 @@ pushColumn c !acc = case c of
 pushVector :: Vector n -> Payloads -> Payloads
 pushVector vector !acc = case vector of
   Map_ (ListKeyValue _ keys values ixs) ->
-      pushColumn keys
-    $ pushColumn values
-    $ pushPrimArray# (Int32.expose ixs)
+      pushColumn values
+    $ pushEmpty -- an empty mask for the values
+    $ pushColumn keys
+    $ pushEmpty -- an empty mask for the keys
+    $ pushEmpty -- an empty mask for the nonnullable struct
+    $ pushPrimArray# (Int32.expose ixs) -- the mask for the indices is already in the accumulator
     $ acc
   VariableBinaryUtf8 (VariableBinary (ByteArrayN b) szs) ->
     let !acc' =
