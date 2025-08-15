@@ -324,7 +324,7 @@ combineScalarMapUtf8Utf8 n !maps = runST action
                       Unlifted.copySlice lte (Lte.reflexive# (# #)) keys listIx ks N0# sz
                       Unlifted.copySlice lte (Lte.reflexive# (# #)) values listIx vs N0# sz
                       go @(p + 1) (Nat.succ# ix) end
-                    _ -> errorWithoutStackTrace "combineScalarMapUtf8Utf8: implementation mistake a"
+                    _ -> errorWithoutStackTrace ("combineScalarMapUtf8Utf8: implementation mistake a: [m=" ++ show (I# total# ) ++ "][listIx=" ++ show (I# (Nat.demote# listIx)) ++ "][sz=" ++ show (I# (Nat.demote# sz)) ++ "]")
             _ -> pure ()
       go N0# N0#
       !keys' <- Unlifted.unsafeFreeze keys
