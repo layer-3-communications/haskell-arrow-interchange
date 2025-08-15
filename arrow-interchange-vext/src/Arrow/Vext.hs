@@ -500,7 +500,7 @@ columnToField name !dictId column = Field
   , children = case column of
       ColumnNoDict (Map_ (ListKeyValue _ k v _)) -> C.singleton
         ( Field
-          { name=T.pack "entries",nullable=True,type_=Struct,dictionary=Nothing
+          { name=T.pack "entries",nullable=False,type_=Struct,dictionary=Nothing
           , children=C.doubleton (columnToField (T.pack "key") dictId k) (columnToField (T.pack "value") (dictId + 1) v)
           }
         )
