@@ -476,6 +476,7 @@ vectorToType = \case
   Date32{} -> Date (TableDate Day)
   Date64{} -> Date (TableDate DateMillisecond)
   VariableBinaryUtf8{} -> Utf8
+  Map_{} -> Map TableMap{keysSorted=False}
 
 -- We reserve two dictionary IDs for each field so that maps can have
 -- separate dictionaries for their keys and values.
