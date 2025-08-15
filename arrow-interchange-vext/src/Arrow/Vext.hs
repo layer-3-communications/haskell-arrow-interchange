@@ -399,13 +399,15 @@ namedColumnToMaskedVector NamedColumn{mask,column} = MaskedVector
 --   foo = Bit.replicate m True#
 
 makePayloads :: Nat# n -> SmallArray (MaskedVector n) -> UnliftedArray ByteArray
-makePayloads !_ !cols =
-  payloadsToArray (C.foldl' (\acc v -> pushMaskedVector v acc) PayloadsNil cols)
+makePayloads !n !cols =
+  payloadsToArray (C.foldl' (\acc v -> pushMaskedVector n v acc) PayloadsNil cols)
 
-pushMaskedVector :: MaskedVector n -> Payloads -> Payloads
-pushMaskedVector MaskedVector{mask,vector} !acc = case Bit.expose mask of
+pushMaskedVector :: Nat# n -> MaskedVector n -> Payloads -> Payloads
+pushMaskedVector n MaskedVector{mask,vector} !acc = case Bit.expose mask of
   PrimArray# b -> 
-    let !exposedMask = ByteArray b
+    let !exposedMask = case Bit.allEqTrue n mask of
+          True -> mempty :: ByteArray
+          False -> ByteArray b
         !acc' = PayloadsCons exposedMask acc
      in pushVector vector acc'
 

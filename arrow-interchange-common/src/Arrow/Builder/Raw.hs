@@ -2,6 +2,7 @@
 {-# language DuplicateRecordFields #-}
 {-# language LambdaCase #-}
 {-# language MagicHash #-}
+{-# language MultiWayIf #-}
 {-# language OverloadedRecordDot #-}
 {-# language PatternSynonyms #-}
 {-# language TypeApplications #-}
@@ -243,51 +244,61 @@ encodePayloadsLz4 !compressionLevel !payloads =
   let EncodePayloadState{builder=builderZ,buffers=buffersZ} = C.foldl'
         (\EncodePayloadState{position,builder,buffers} payload ->
           let payloadSize = PM.sizeofByteArray payload
-           in if payloadSize <= 64
-                then
-                  -- We pad to 8-byte alignment rather than 64-byte alignment.
-                  -- Anyone working with compressed Arrow buffers should not expecting
-                  -- to be able to memory map the contents anyway.
-                  let padding = computePadding8 (PM.sizeofByteArray payload)
-                      builder' =
-                        builder
-                        <>
-                        Catenable.bytes (LittleEndian.int64 (-1))
-                        <>
-                        Catenable.bytes (Bytes.fromByteArray payload)
-                        <>
-                        Catenable.bytes (Bytes.replicate padding 0x00)
-                      unpaddedLen = 8 + PM.sizeofByteArray payload
-                      paddedLen = padding + unpaddedLen
-                      buffers' =
-                        Buffer{offset=fromIntegral position, length=fromIntegral unpaddedLen} : buffers
-                      position' = position + paddedLen
-                   in EncodePayloadState
-                        { position = position'
-                        , builder = builder'
-                        , buffers = buffers'
-                        }
-                else
-                  let compressed = Lz4.compressHighlyU compressionLevel (Bytes.fromByteArray payload)
-                      padding = computePadding8 (PM.sizeofByteArray compressed)
-                      builder' =
-                        builder
-                        <>
-                        Catenable.bytes (LittleEndian.int64 (fromIntegral payloadSize))
-                        <>
-                        Catenable.bytes (Bytes.fromByteArray compressed)
-                        <>
-                        Catenable.bytes (Bytes.replicate padding 0x00)
-                      unpaddedLen = 8 + PM.sizeofByteArray compressed
-                      paddedLen = unpaddedLen + padding
-                      buffers' =
-                        Buffer{offset=fromIntegral position, length=fromIntegral unpaddedLen} : buffers
-                      position' = position + paddedLen
-                   in EncodePayloadState
-                        { position = position'
-                        , builder = builder'
-                        , buffers = buffers'
-                        }
+           in if | payloadSize == 0 ->
+                      -- Payloads size zero most commonly occur when a bitmap
+                      -- is omitted. These have to be treated specially because
+                      -- we do not put the number negative one in the front
+                      -- of the buffer. There is no buffer.
+                      let buffers' = Buffer{offset=fromIntegral position, length=0} : buffers
+                       in EncodePayloadState
+                            { position = position
+                            , builder = builder
+                            , buffers = buffers'
+                            }
+                 | payloadSize <= 64 ->
+                     -- We pad to 8-byte alignment rather than 64-byte alignment.
+                     -- Anyone working with compressed Arrow buffers should not expecting
+                     -- to be able to memory map the contents anyway.
+                     let padding = computePadding8 (PM.sizeofByteArray payload)
+                         builder' =
+                           builder
+                           <>
+                           Catenable.bytes (LittleEndian.int64 (-1))
+                           <>
+                           Catenable.bytes (Bytes.fromByteArray payload)
+                           <>
+                           Catenable.bytes (Bytes.replicate padding 0x00)
+                         unpaddedLen = 8 + PM.sizeofByteArray payload
+                         paddedLen = padding + unpaddedLen
+                         buffers' =
+                           Buffer{offset=fromIntegral position, length=fromIntegral unpaddedLen} : buffers
+                         position' = position + paddedLen
+                      in EncodePayloadState
+                           { position = position'
+                           , builder = builder'
+                           , buffers = buffers'
+                           }
+                 | otherwise ->
+                     let compressed = Lz4.compressHighlyU compressionLevel (Bytes.fromByteArray payload)
+                         padding = computePadding8 (PM.sizeofByteArray compressed)
+                         builder' =
+                           builder
+                           <>
+                           Catenable.bytes (LittleEndian.int64 (fromIntegral payloadSize))
+                           <>
+                           Catenable.bytes (Bytes.fromByteArray compressed)
+                           <>
+                           Catenable.bytes (Bytes.replicate padding 0x00)
+                         unpaddedLen = 8 + PM.sizeofByteArray compressed
+                         paddedLen = unpaddedLen + padding
+                         buffers' =
+                           Buffer{offset=fromIntegral position, length=fromIntegral unpaddedLen} : buffers
+                         position' = position + paddedLen
+                      in EncodePayloadState
+                           { position = position'
+                           , builder = builder'
+                           , buffers = buffers'
+                           }
         ) EncodePayloadState{builder=mempty,position=0,buffers=[]} payloads
    in (builderZ, C.unsafeFromListReverseN (sizeofUnliftedArray payloads) buffersZ)
 
