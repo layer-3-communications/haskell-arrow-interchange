@@ -16,3 +16,7 @@ source-repository-package
   location: https://github.com/byteverse/natural-arithmetic
   tag: fd7b09e35495fa76ae2b63d68fabcae913c3f16c
 
+source-repository-package
+  type: git
+  location: https://github.com/byteverse/lz4-bytes
+  tag: 7e392add4bbd0250940f49e149886eb19231b71a

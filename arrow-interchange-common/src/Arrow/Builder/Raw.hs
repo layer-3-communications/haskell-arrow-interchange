@@ -100,7 +100,7 @@ data Payloads
 
 data Compression
   = None
-  | Lz4 !Int -- LZ4 HC compression level (default is 9)
+  | Lz4 !Int -- ^ LZ4 HC compression level. Zero means use fast compression (with acceleration factor 1) instead of HC.
 
 computePadding64 :: Int -> Int
 {-# inline computePadding64 #-}
@@ -279,7 +279,9 @@ encodePayloadsLz4 !compressionLevel !payloads =
                            , buffers = buffers'
                            }
                  | otherwise ->
-                     let compressed = Lz4.compressHighlyU compressionLevel (Bytes.fromByteArray payload)
+                     let compressed = case compressionLevel of
+                           0 -> Lz4.compressU 1 (Bytes.fromByteArray payload)
+                           _ -> Lz4.compressHighlyU compressionLevel (Bytes.fromByteArray payload)
                          padding = computePadding8 (PM.sizeofByteArray compressed)
                          builder' =
                            builder
