@@ -26,8 +26,8 @@ library
     , contiguous >=0.6.4.2
     , flatbuffers-builder >=1.0
     , flatbuffers-parser >=0.2
-    , lz4-bytes >=0.2.0
-    , natural-arithmetic >=0.2.3
+    , lz4-bytes >=0.2.1
+    , natural-arithmetic >=0.2.4
     , primitive >=0.8
     , primitive-unlifted >=2.2
     , run-st >=0.1.1
@@ -56,5 +56,5 @@ test-suite test
     , text >=2.0
     , vext >=0.1.1
     , contiguous >=0.6
-    , unlifted >=0.2.2
+    , unlifted >=0.2.4
     , natural-arithmetic
