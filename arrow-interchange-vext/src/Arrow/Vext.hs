@@ -15,6 +15,7 @@ module Arrow.Vext
   ( Column(..)
   , Vector(..)
   , VariableBinary(..)
+  , VariableSizeList(..)
   , ListKeyValue(..)
   , ScalarMapUtf8Utf8(..)
   , NamedColumn(..)
@@ -34,6 +35,7 @@ module Arrow.Vext
   , encodeFooterAndEpilogue
     -- * Variable Binary Helper
   , shortTextVectorToVariableBinary
+  , shortTextsVectorToListVariableBinary
     -- * Map Helper
   , combineScalarMapUtf8Utf8
     -- * Dictionaries
@@ -57,17 +59,21 @@ import Data.Foldable (foldlM)
 import Data.Maybe (fromMaybe)
 import Data.Maybe.Void (pattern JustVoid#)
 import Data.Primitive (SmallArray,ByteArray(ByteArray),PrimArray)
-import Data.Primitive.Unlifted.Array (UnliftedArray)
+import Data.Primitive.Unlifted.Array (UnliftedArray,UnliftedArray_(UnliftedArray))
 import Data.Text (Text)
 import Data.Unlifted (Bool#, pattern True#, ShortText#)
 import Data.Text.Short.Unlifted (pattern Empty#)
 import Data.Unlifted (PrimArray#(PrimArray#), Word128#)
 import Data.Word (Word32)
-import GHC.Exts ((+#),RuntimeRep,TYPE)
+import GHC.Exts ((+#),RuntimeRep,TYPE, ByteArray#, coerce)
 import GHC.Exts (Int8#,Int16#,Int32#,Int64#,Word64#,Word32#,Word16#,Word8#)
 import GHC.Int (Int64(I64#),Int(I#))
 import GHC.TypeNats (Nat, type (+))
 import Control.Monad.ST (ST)
+import Data.Primitive.Unlifted.Array (sizeofUnliftedArray)
+import GHC.Exts (Array#)
+import GHC.Word (Word32(W32#))
+import GHC.Int (Int32(I32#))
 
 import qualified Arithmetic.Fin as Fin
 import qualified Arithmetic.Lt as Lt
@@ -85,6 +91,8 @@ import qualified Data.Primitive.ByteArray.LittleEndian as LE
 import qualified Data.Primitive.Contiguous as C
 import qualified Data.Text as T
 import qualified Data.Text.Short as TS
+import qualified Data.Primitive.Unlifted.Array.Primops
+import qualified Data.Primitive.Unlifted.Class as PMU
 import qualified Data.Text.Short.Unlifted
 import qualified Flatbuffers.Builder as B
 import qualified GHC.Exts as Exts
@@ -125,6 +133,8 @@ data Vector n
       !(Word128.Vector n Word128#)
   | VariableBinaryUtf8
       !(VariableBinary n)
+  | List_
+      !(VariableSizeList n)
   | Map_ !(ListKeyValue n)
   | TimestampUtcNanosecond
       !(Int64.Vector n Int64#)
@@ -245,6 +255,14 @@ data ListKeyValue (n :: GHC.Nat) = forall (m :: GHC.Nat). ListKeyValue
   -- last element should be m.
   !(Int32.Vector (n + 1) (Fin32# (m + 1)))
 
+data VariableSizeList n = forall m. VariableSizeList
+  !(Arithmetic.Nat# m)
+  !(Column m) -- elements that are referred to by indices
+  -- Invariant unenforced by type system: these finite numbers must
+  -- be in nondescending order. The first element should be zero, and the
+  -- last element should be m.
+  !(Int32.Vector (n + 1) (Fin32# (m + 1)))
+
 -- data ListView (elements :: GHC.Nat -> Type) (n :: GHC.Nat) = forall (m :: GHC.Nat). ListView
 --   { offsets :: !(Int32.Vector n (Fin32# m))
 --   , sizes :: !(Int32.Vector n _)
@@ -335,8 +353,11 @@ combineScalarMapUtf8Utf8 n !maps = runST action
         Just outerIxsFrozen' -> pure $! ListKeyValue m keysColumn valuesColumn outerIxsFrozen'
         Nothing -> errorWithoutStackTrace "combineScalarMapUtf8Utf8: implementation mistake b"
 
-shortTextVectorToVariableBinary :: forall n. Nat# n -> Unlifted.Vector n ShortText# -> VariableBinary n
-shortTextVectorToVariableBinary n texts = runST $ do
+shortTextVectorToVariableBinary :: forall n.
+     Nat# n
+  -> Unlifted.Vector n ShortText#
+  -> VariableBinary n
+shortTextVectorToVariableBinary n !texts = runST $ do
   dst <- Int32.initialized (Nat.succ# n) (Exts.intToInt32# 0# )
   I# total# <- Fin.ascendM# n (0 :: Int) $ \fin !offset@(I# offset#) -> do
     let !val = Unlifted.index texts fin
@@ -434,6 +455,11 @@ pushVector vector !acc = case vector of
     $ pushEmpty -- an empty mask for the nonnullable struct
     $ pushPrimArray# (Int32.expose ixs) -- the mask for the indices is already in the accumulator
     $ acc
+  List_ (VariableSizeList m keys ixs) ->
+      pushColumn keys
+    $ pushEmpty -- an empty mask for the keys (the elements)
+    $ pushPrimArray# (Int32.expose ixs) -- the mask for the indices is already in the accumulator
+    $ acc
   VariableBinaryUtf8 (VariableBinary (ByteArrayN b) szs) ->
     let !acc' =
             PayloadsCons b
@@ -486,6 +512,7 @@ vectorToType = \case
   Date64{} -> Date (TableDate DateMillisecond)
   VariableBinaryUtf8{} -> Utf8
   Map_{} -> Map TableMap{keysSorted=False}
+  List_{} -> List
 
 -- We reserve two dictionary IDs for each field so that maps can have
 -- separate dictionaries for their keys and values.
@@ -519,7 +546,13 @@ columnToField' nullable name !dictId column = Field
           , children=C.doubleton (columnToNonnullableField (T.pack "key") dictId k) (columnToNonnullableField (T.pack "value") (dictId + 1) v)
           }
         )
+      ColumnNoDict (List_ (VariableSizeList _ k _)) -> C.singleton
+        ( Field
+          { name=T.empty,nullable=False,type_=columnToType k,dictionary=Nothing, children=mempty
+          }
+        )
       ColumnDict _ _ Map_{} _ -> errorWithoutStackTrace "namedColumnToField: cannot dictionary compress a map yet"
+      ColumnDict _ _ List_{} _ -> errorWithoutStackTrace "namedColumnToField: cannot dictionary compress a list yet"
       _ -> mempty
   }
 
@@ -993,6 +1026,9 @@ makeRecordBatch !n cmpr buffers !cols = RecordBatch
                   PM.writePrimArray dst (dstIx+2) FieldNode {length=fromIntegral (I# (Nat.demote# m)), nullCount=0 }
                   PM.writePrimArray dst (dstIx+3) FieldNode {length=fromIntegral (I# (Nat.demote# m)), nullCount=0 }
                   pure (dstIx + 4)
+                List_ (VariableSizeList m _ _) -> do
+                  PM.writePrimArray dst (dstIx+1) FieldNode {length=fromIntegral (I# (Nat.demote# m)), nullCount=0 }
+                  pure (dstIx + 2)
                 _ -> pure (dstIx + 1)
               go (srcIx + 1) dstIx'
             else pure dstIx
@@ -1005,3 +1041,54 @@ makeRecordBatch !n cmpr buffers !cols = RecordBatch
 
 makeNaiveDictionary :: Nat# n -> Vector n -> Column n
 makeNaiveDictionary n v = ColumnDict N0# n v (Int32.ascendingFins n)
+
+-- Implementation note:
+-- Whenever I add ascend'# to Arithmetic.Fin, I can clean this up.
+countAllElements :: Arithmetic.Nat# n -> Unlifted.Vector n (Array# ShortText# ) -> Int
+countAllElements !n !src = Fin.ascend' (Nat.lift n) 0
+  (\(Fin ix lt) acc -> I# (Exts.sizeofArray# (Unlifted.index src (Fin.unlift (Arithmetic.Fin ix lt)))) + acc)
+
+-- This coercion is safe. These two types have exactly the
+-- same representation
+coerceArrayOfShortText# :: Array# ShortText# -> Array# ByteArray#
+{-# inline coerceArrayOfShortText# #-}
+coerceArrayOfShortText# x = coerce x
+
+-- No dictionary support yet
+shortTextsVectorToListVariableBinary :: forall n.
+     Arithmetic.Nat# n
+  -> Unlifted.Vector n (Array# ShortText# )
+  -> VariableSizeList n
+shortTextsVectorToListVariableBinary !n !src = runST $ do
+  ixsDst <- Int32.initialized (Nat.succ# n) (Exts.intToInt32# 0# )
+  let !totalElements@(I# totalElements# ) = countAllElements n src
+  Nat.with# totalElements# $ \m -> do
+    elemsDst <- Unlifted.initialized m Data.Text.Short.Unlifted.Empty#
+    finalOffset <- Fin.ascendM# n (0 :: Int) $ \fin !offset0 -> C.foldlM'
+      (\offset@(I# offset# ) (ByteArray txt) -> case Fin.fromInt# m offset# of
+        Arithmetic.MaybeFinJust# off -> do
+          Unlifted.write elemsDst off (Data.Text.Short.Unlifted.ShortText# txt)
+          pure (offset + 1)
+        _ -> errorWithoutStackTrace "Arrow.Vext.explodeVarBinList: implementation mistake A"
+      ) offset0 (UnliftedArray (Data.Primitive.Unlifted.Array.Primops.UnliftedArray# (coerceArrayOfShortText# (Unlifted.index src fin))))
+    if finalOffset /= totalElements
+      then errorWithoutStackTrace "Arrow.Vext.explodeVarBinList: implementation mistake B"
+      else do
+        elemsDst' <- Unlifted.unsafeFreeze elemsDst
+        finalIxOff <- Fin.ascendM# n (0 :: Int) $ \fin !offset0 -> do
+          let !txts = Unlifted.index src fin
+          let !dstIxFin = Fin.weakenR# @n @1 fin -- Fin.construct# (Lt.weakenR# @1 lt) ix
+          Int32.write ixsDst dstIxFin (case fromIntegral offset0 :: Int32 of {I32# w -> w})
+          pure (offset0 + I# (Exts.sizeofArray# txts))
+        if finalIxOff /= I# (Nat.demote# m)
+          then errorWithoutStackTrace "Arrow.Vext.explodeVarBinList: implementation mistake C"
+          else do
+            let !dstIxFin = Fin.construct# (Lt.incrementL# @n (Lt.zero# (# #))) n
+            Int32.write ixsDst dstIxFin (case fromIntegral finalIxOff :: Int32 of {I32# w -> w})
+            ixsDst' <- Int32.unsafeFreeze ixsDst
+            case Int32.toFins (Nat.succ# m) (Nat.succ# n) ixsDst' of
+              Just ixsDst'' -> pure $! VariableSizeList
+                m
+                (ColumnNoDict (VariableBinaryUtf8 (shortTextVectorToVariableBinary m elemsDst')))
+                ixsDst''
+              Nothing -> errorWithoutStackTrace "Arrow.Vext.explodeVarBinList: implementation mistake D"
